@@ -1,18 +1,14 @@
 {
-  "name": "diet-tracker-bot",
+  "name": "diet-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram WebApp bot for tracking a daily personalized diet regime",
+  "description": "Telegram Diet Budget Tracker Bot",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "grammy": "^1.28.0",
-    "node-cron": "^3.0.3"
+    "better-sqlite3": "^11.8.0",
+    "express": "^4.21.2",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
