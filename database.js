@@ -139,23 +139,50 @@ function seedProductsIfEmpty() {
       (@category_letter, @category_name, @product_name, @portion_size, 'g', @calories, @protein, @carbs, @fat, @is_fruit, @is_high_sugar, @notes)
   `);
 
-  const insertMany = db.transaction((items) => {
-    for (const item of items) {
-      insert.run({
-        ...item,
-        protein: item.protein || 0,
-        carbs: item.carbs || 0,
-        fat: item.fat || 0,
-        is_fruit: item.is_fruit ? 1 : 0,
-        is_high_sugar: item.is_high_sugar ? 1 : 0,
-        notes: item.notes || null,
-      });
+  const insertMany = db.transaction((categories) => {
+    for (const cat of categories) {
+      // Перевіряємо, чи містить категорія вкладений список продуктів (items)
+      if (cat.items && Array.isArray(cat.items)) {
+        for (const item of cat.items) {
+          insert.run({
+            category_letter: cat.category || cat.category_letter || '',
+            category_name: cat.title || cat.category_name || '',
+            product_name: item.name || '',
+            portion_size: parseInt(item.portion) || 0,
+            calories: cat.calories || item.calories || 0,
+            protein: item.protein || 0,
+            carbs: item.carbs || 0,
+            fat: item.fat || 0,
+            is_fruit: cat.isFlexible ? 1 : 0,
+            is_high_sugar: 0,
+            notes: cat.mealName || null,
+          });
+        }
+      } else {
+        // Якщо масив вже плаский
+        insert.run({
+          category_letter: cat.category_letter || cat.category || '',
+          category_name: cat.category_name || cat.title || '',
+          product_name: cat.product_name || cat.name || '',
+          portion_size: parseInt(cat.portion_size || cat.portion) || 0,
+          calories: cat.calories || 0,
+          protein: cat.protein || 0,
+          carbs: cat.carbs || 0,
+          fat: cat.fat || 0,
+          is_fruit: cat.is_fruit ? 1 : 0,
+          is_high_sugar: cat.is_high_sugar ? 1 : 0,
+          notes: cat.notes || null,
+        });
+      }
     }
   });
 
   insertMany(seedData);
   return { seeded: true, count: seedData.length };
 }
+
+// ---------------------------------------------------------------------------
+// User helpers
 
 // ---------------------------------------------------------------------------
 // User helpers
