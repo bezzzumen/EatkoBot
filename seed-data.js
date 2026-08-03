@@ -1,206 +1,104 @@
 const seedData = [
-  // ==========================================
-  // 🌅 1-й ПРИЙОМ ЇЖІ (СНІДАНОК)
-  // ==========================================
   {
-    category: 'а',
-    meal: 1,
-    mealName: 'Сніданок',
-    title: '🌾 Складні вуглеводи / Крупи / Хліб',
-    calories: 180,
+    id: 1,
+    category: 'Гарнір',
+    emoji: '🌾',
+    targetCalories: 360,
     items: [
-      { name: 'Бобові', portion: '50 г' },
-      { name: 'Картопля', portion: '180 г' },
-      { name: 'Кукурудза свіжа', portion: '180 г' },
-      { name: 'Рис (нешліфований)', portion: '50 г' },
-      { name: 'Будь-яка крупа', portion: '50 г' },
-      { name: 'Цільнозернове борошно', portion: '50 г' },
-      { name: 'Хлібці', portion: '80 г' },
-      { name: 'Цільнозерновий хліб', portion: '85 г' },
-      { name: 'Макарони т.с.', portion: '50 г' },
-      { name: 'Лаваш', portion: '80 г' }
+      { name: 'Бобові', maxGrams: 100, unit: 'г' },
+      { name: 'Картопля', maxGrams: 360, unit: 'г' },
+      { name: 'Кукурудза свіжа', maxGrams: 360, unit: 'г' },
+      { name: 'Рис (нешліфований)', maxGrams: 100, unit: 'г' },
+      { name: 'Будь-яка крупа', maxGrams: 100, unit: 'г' },
+      { name: 'Цільнозернове борошно', maxGrams: 100, unit: 'г' },
+      { name: 'Хлібці', maxGrams: 160, unit: 'г' },
+      { name: 'Цільнозерновий хліб', maxGrams: 170, unit: 'г' },
+      { name: 'Макарони т.с.', maxGrams: 100, unit: 'г' },
+      { name: 'Лаваш', maxGrams: 160, unit: 'г' }
     ]
   },
   {
-    category: 'б',
-    meal: 1,
-    mealName: 'Сніданок',
-    title: '🥛 Кисломолочні продукти / Сир',
-    calories: 110,
+    id: 2,
+    category: 'Молочні продукти',
+    emoji: '🥛',
+    targetCalories: 260,
     items: [
-      { name: 'Сир зернистий (творог 0.2%)', portion: '150 г' },
-      { name: 'Сири м‘які, тверді, плавлені', portion: '30 г' },
-      { name: 'Сметани 15%', portion: '60 г' },
-      { name: 'Кефір 1%', portion: '270 г' },
-      { name: 'Несолодкий йогурт 1%', portion: '250 г' },
-      { name: 'Молоко 1%', portion: '280 г' }
+      { name: 'Сир зернистий 0.2%', maxGrams: 355, unit: 'г' },
+      { name: 'Сири м‘які, тверді, плавлені', maxGrams: 72, unit: 'г' },
+      { name: 'Сметана 15%', maxGrams: 145, unit: 'г' },
+      { name: 'Кефір 1%', maxGrams: 630, unit: 'г' },
+      { name: 'Несолодкий йогурт 1%', maxGrams: 600, unit: 'г' },
+      { name: 'Молоко 1%', maxGrams: 650, unit: 'г' }
     ]
   },
   {
-    category: 'в',
-    meal: 1,
-    mealName: 'Сніданок',
-    title: '🍕 Свобода вибору / Солодощі / Снеки',
-    calories: 425,
-    isFlexible: true, // Дозволяє заміну на фрукти
+    id: 3,
+    category: 'Свобода вибору / Будь-чого',
+    emoji: '🍕',
+    targetCalories: 425,
     items: [
-      { name: 'Будь-чого (солодощі, снеки, ковбаса тощо)', portion: '85 г' }
-    ]
-  },
-
-  // ==========================================
-  // ☀️ 2-й ПРИЙОМ ЇЖІ (ОБІД)
-  // ==========================================
-  {
-    category: 'г',
-    meal: 2,
-    mealName: 'Обід',
-    title: '🥔 Складні вуглеводи / Крупи',
-    calories: 180,
-    items: [
-      { name: 'Бобові', portion: '50 г' },
-      { name: 'Картопля', portion: '180 г' },
-      { name: 'Кукурудза свіжа', portion: '180 г' },
-      { name: 'Рис (нешліфований)', portion: '50 г' },
-      { name: 'Будь-яка крупа', portion: '50 г' },
-      { name: 'Цільнозернове борошно', portion: '50 г' },
-      { name: 'Хлібці', portion: '80 г' },
-      { name: 'Цільнозерновий хліб', portion: '85 г' },
-      { name: 'Макарони т.с.', portion: '50 г' },
-      { name: 'Лаваш', portion: '80 г' }
+      { name: 'Солодощі, снеки, ковбаса тощо', maxGrams: 85, unit: 'г' }
     ]
   },
   {
-    category: 'д',
-    meal: 2,
-    mealName: 'Обід',
-    title: '🍗 М’ясо / Птиця / Риба / Яйця',
-    calories: 200,
+    id: 4,
+    category: "М'ясо / Риба / Яйця",
+    emoji: '🍗',
+    targetCalories: 400,
     items: [
-      { name: 'Телятина', portion: '160 г' },
-      { name: 'Печінка', portion: '160 г' },
-      { name: 'Куряче або індиче філе', portion: '190 г' },
-      { name: 'Риба (до 5% жиру)', portion: '185 г' },
-      { name: 'Риба (від 5% жиру)', portion: '125 г' },
-      { name: 'Яйця', portion: '3 шт' },
-      { name: 'Морепродукти', portion: '220 г' }
+      { name: 'Телятина', maxGrams: 320, unit: 'г' },
+      { name: 'Печінка', maxGrams: 320, unit: 'г' },
+      { name: 'Куряче або індиче філе', maxGrams: 380, unit: 'г' },
+      { name: 'Риба (до 5% жиру)', maxGrams: 370, unit: 'г' },
+      { name: 'Риба (від 5% жиру)', maxGrams: 250, unit: 'г' },
+      { name: 'Яйця', maxGrams: 6, unit: 'шт' },
+      { name: 'Морепродукти', maxGrams: 440, unit: 'г' }
     ]
   },
   {
-    category: 'е',
-    meal: 2,
-    mealName: 'Обід',
-    title: '🥦 Овочі / Гриби / Зелень',
-    calories: 60,
+    id: 5,
+    category: 'Овочі та гриби',
+    emoji: '🥦',
+    targetCalories: 120,
     items: [
-      { name: 'Овочі (свіжі, квашені), зелень', portion: '300 г' },
-      { name: 'Гриби', portion: '300 г' }
+      { name: 'Овочі квашені або зелень', maxGrams: 600, unit: 'г' },
+      { name: 'Гриби', maxGrams: 600, unit: 'г' }
     ]
   },
   {
-    category: 'є',
-    meal: 2,
-    mealName: 'Обід',
-    title: '🥑 Корисні жири / Олія / Соуси',
-    calories: 110,
+    id: 6,
+    category: 'Жири та соуси',
+    emoji: '🥑',
+    targetCalories: 220,
     items: [
-      { name: 'Будь-яка олія (рекомендуємо лляну)', portion: '12 г' },
-      { name: 'Авокадо', portion: '65 г' },
-      { name: 'Оливки', portion: '80 г' },
-      { name: 'Гірчиця', portion: '28 г' },
-      { name: 'Майонез', portion: '15 г' },
-      { name: 'Кетчуп', portion: '42 г' },
-      { name: 'Вершкове масло', portion: '14 г' },
-      { name: 'Сало', portion: '10 г' }
-    ]
-  },
-
-  // ==========================================
-  // ☕ 3-й ПРИЙОМ ЇЖІ (ПЕРЕКУС / ЛАНЧ)
-  // ==========================================
-  {
-    category: 'ж',
-    meal: 3,
-    mealName: 'Перекус',
-    title: '🥛 Кисломолочні продукти / Йогурт',
-    calories: 150,
-    items: [
-      { name: 'Сир зернистий (творог 0.2%)', portion: '205 г' },
-      { name: 'Сири м‘які, тверді, плавлені', portion: '42 г' },
-      { name: 'Сметани 15%', portion: '85 г' },
-      { name: 'Кефір 1%', portion: '360 г' },
-      { name: 'Несолодкий йогурт 1%', portion: '345 г' },
-      { name: 'Молоко 1%', portion: '370 г' }
+      { name: 'Будь-яка олія (рекомендуємо лляну)', maxGrams: 24, unit: 'г' },
+      { name: 'Авокадо', maxGrams: 130, unit: 'г' },
+      { name: 'Оливки', maxGrams: 160, unit: 'г' },
+      { name: 'Гірчиця', maxGrams: 56, unit: 'г' },
+      { name: 'Майонез', maxGrams: 30, unit: 'г' },
+      { name: 'Кетчуп', maxGrams: 84, unit: 'г' },
+      { name: 'Вершкове масло', maxGrams: 28, unit: 'г' },
+      { name: 'Сало', maxGrams: 20, unit: 'г' }
     ]
   },
   {
-    category: 'з',
-    meal: 3,
-    mealName: 'Перекус',
-    title: '🍎 Фрукти та ягоди',
-    calories: 290,
+    id: 7,
+    category: 'Фрукти та ягоди',
+    emoji: '🍎',
+    targetCalories: 290,
     items: [
-      { name: 'Стандартні фрукти та ягоди', portion: '400 г' },
-      { name: 'Солодкі фрукти (банани, виноград, хурма)', portion: '240 г' }
+      { name: 'Фрукти та ягоди', maxGrams: 400, unit: 'г' },
+      { name: 'Банани, виноград, хурма', maxGrams: 240, unit: 'г' }
     ]
   },
   {
-    category: 'и',
-    meal: 3,
-    mealName: 'Перекус',
-    title: '🥜 Горіхи / Насіння',
-    calories: 145,
+    id: 8,
+    category: 'Горіхи та насіння',
+    emoji: '🥜',
+    targetCalories: 145,
     items: [
-      { name: 'Будь-які горіхи (рекомендуємо грецькі)', portion: '20 г' },
-      { name: 'Насіння', portion: '20 г' }
-    ]
-  },
-
-  // ==========================================
-  // 🌙 4-й ПРИЙОМ ЇЖІ (ВЕЧЕРЯ)
-  // ==========================================
-  {
-    category: 'і',
-    meal: 4,
-    mealName: 'Вечеря',
-    title: '🥩 М’ясо / Птиця / Риба / Яйця',
-    calories: 200,
-    items: [
-      { name: 'Телятина', portion: '160 г' },
-      { name: 'Печінка', portion: '160 г' },
-      { name: 'Куряче або індиче філе', portion: '190 г' },
-      { name: 'Риба (до 5% жиру)', portion: '185 г' },
-      { name: 'Риба (від 5% жиру)', portion: '125 г' },
-      { name: 'Яйця', portion: '3 шт' },
-      { name: 'Морепродукти', portion: '220 г' }
-    ]
-  },
-  {
-    category: 'ї',
-    meal: 4,
-    mealName: 'Вечеря',
-    title: '🥗 Овочі / Гриби / Зелень',
-    calories: 60,
-    items: [
-      { name: 'Овочі (свіжі, квашені), зелень', portion: '300 г' },
-      { name: 'Гриби', portion: '300 г' }
-    ]
-  },
-  {
-    category: 'й',
-    meal: 4,
-    mealName: 'Вечеря',
-    title: '🥑 Корисні жири / Олія / Соуси',
-    calories: 110,
-    items: [
-      { name: 'Будь-яка олія (рекомендуємо лляну)', portion: '12 г' },
-      { name: 'Авокадо', portion: '65 г' },
-      { name: 'Оливки', portion: '80 г' },
-      { name: 'Гірчиця', portion: '28 г' },
-      { name: 'Майонез', portion: '15 г' },
-      { name: 'Кетчуп', portion: '42 г' },
-      { name: 'Вершкове масло', portion: '14 г' },
-      { name: 'Сало', portion: '10 г' }
+      { name: 'Горіхи', maxGrams: 20, unit: 'г' },
+      { name: 'Насіння', maxGrams: 20, unit: 'г' }
     ]
   }
 ];
