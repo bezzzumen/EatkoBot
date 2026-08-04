@@ -39,7 +39,7 @@ db.pragma('foreign_keys = ON');
 const CATEGORIES = [
   { key: 'garnish', name: 'Гарнір', emoji: '🌾', target_calories: 360 },
   { key: 'dairy', name: 'Молочні продукти', emoji: '🥛', target_calories: 260 },
-  { key: 'freebie', name: 'Будь-чого / Свобода вибору', emoji: '🍫', target_calories: 425 },
+  { key: 'freebie', name: '3) Будь-чого (~425 Ккал)', emoji: '🍫', target_calories: 425 },
   { key: 'protein', name: "М'ясо / Риба / Яйця", emoji: '🍗', target_calories: 400 },
   { key: 'veggies', name: 'Овочі та гриби', emoji: '🥦', target_calories: 120 },
   { key: 'fats', name: 'Жири та соуси', emoji: '🥑', target_calories: 220 },
