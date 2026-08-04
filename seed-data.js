@@ -59,14 +59,11 @@ const DAIRY = cat([
   { product_name: 'Молоко 1%', max_grams: 650, protein: 21, carbs: 30, fat: 6.5 },
 ], 'dairy');
 
-// --- 3. Будь-чого / Свобода вибору (~425 ккал) — inherently open-ended;
-// these are illustrative examples only. Replace/add your real picks for
-// the day — there's no way to pre-populate "anything" meaningfully. ---
+// --- 3. Будь-чого (~425 ккал) ---
 const FREEBIE = cat([
-  { product_name: 'Приклад: чорний шоколад', max_grams: 85, protein: 5, carbs: 45, fat: 25, notes: 'Приклад — замініть на свій реальний варіант.' },
-  { product_name: 'Приклад: чіпси', max_grams: 85, protein: 5, carbs: 45, fat: 25, notes: 'Приклад — замініть на свій реальний варіант.' },
-  { product_name: 'Приклад: ковбаса', max_grams: 85, protein: 20, carbs: 3, fat: 38, notes: 'Приклад — замініть на свій реальний варіант.' },
-  { product_name: 'TODO: додайте свій реальний варіант (85 г, ~425 ккал)', max_grams: 85, protein: 0, carbs: 0, fat: 0 },
+  { product_name: 'Солодощі', max_grams: 85, protein: 4, carbs: 55, fat: 20 },
+  { product_name: 'Снеки', max_grams: 85, protein: 5, carbs: 45, fat: 25 },
+  { product_name: 'Ковбаса, тощо', max_grams: 85, protein: 20, carbs: 3, fat: 38 },
 ], 'freebie');
 
 // --- 4. М'ясо / Риба / Яйця (~400 ккал) — was old "protein" category
