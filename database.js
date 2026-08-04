@@ -224,6 +224,105 @@ function logGrams(userId, date, productId, grams) {
 
 const round1 = (n) => Math.round(n * 10) / 10;
 
+// ---------------------------------------------------------------------------
+// Date-only arithmetic (dates are plain 'YYYY-MM-DD' strings — server.js is
+// responsible for those being calendar days in Europe/Kyiv time; this layer
+// just does calendar math on the string, anchored at UTC noon so DST shifts
+// never bump the date).
+// ---------------------------------------------------------------------------
+
+function addDaysISO(dateStr, delta) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+
+function dayOfWeekMonFirst(dateStr) {
+  // 0 = Monday ... 6 = Sunday
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const jsDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = Sunday
+  return jsDay === 0 ? 6 : jsDay - 1;
+}
+
+const WEEKDAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+
+// Total calories consumed on a given date, computed the same way as
+// getTodayStatus (category target * usage ratio, summed) but without
+// building the full items/categories payload. Returns null if nothing was
+// logged that day at all (distinct from "logged 0 calories").
+function getTotalCaloriesForDate(userId, date) {
+  const logs = db
+    .prepare(`
+      SELECT dl.logged_grams, p.max_grams, p.category_key
+      FROM daily_logs dl JOIN products p ON p.id = dl.product_id
+      WHERE dl.user_id = ? AND dl.log_date = ?
+    `)
+    .all(userId, date);
+
+  if (!logs.length) return null;
+
+  const usageByCategory = {};
+  for (const log of logs) {
+    if (!log.max_grams) continue;
+    usageByCategory[log.category_key] = (usageByCategory[log.category_key] || 0) + log.logged_grams / log.max_grams;
+  }
+
+  let total = 0;
+  for (const catMeta of CATEGORIES) {
+    total += catMeta.target_calories * (usageByCategory[catMeta.key] || 0);
+  }
+  return total;
+}
+
+// Consecutive successful (<=100% of the daily target) days leading up to
+// today. Today itself only counts once it has logs — an in-progress
+// (unlogged) today neither extends nor breaks the streak, so the count
+// falls back to "as of yesterday" until today is actually over budget or
+// finished under it. Any past day with no logs at all breaks the chain.
+function computeStreak(userId, todayDate) {
+  let streak = 0;
+
+  const todayTotal = getTotalCaloriesForDate(userId, todayDate);
+  if (todayTotal !== null) {
+    if (todayTotal > DAILY_CALORIE_TARGET) return 0; // today already over -> streak broken
+    streak += 1; // today counts as successful so far
+  }
+
+  let cursor = addDaysISO(todayDate, -1);
+  const MAX_LOOKBACK_DAYS = 3650; // safety cap, not a real limit in practice
+  for (let i = 0; i < MAX_LOOKBACK_DAYS; i++) {
+    const total = getTotalCaloriesForDate(userId, cursor);
+    if (total === null || total > DAILY_CALORIE_TARGET) break;
+    streak += 1;
+    cursor = addDaysISO(cursor, -1);
+  }
+
+  return streak;
+}
+
+// Mon-Sun of the week containing `todayDate`, each day's status:
+// 'success' (<=100%), 'over' (>100%), 'unlogged' (past day, nothing logged),
+// or 'future' (later than today).
+function getWeeklyHistory(userId, todayDate) {
+  const monday = addDaysISO(todayDate, -dayOfWeekMonFirst(todayDate));
+
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const date = addDaysISO(monday, i);
+    let status;
+    if (date > todayDate) {
+      status = 'future';
+    } else {
+      const total = getTotalCaloriesForDate(userId, date);
+      if (total === null) status = 'unlogged';
+      else status = total <= DAILY_CALORIE_TARGET ? 'success' : 'over';
+    }
+    days.push({ date, label: WEEKDAY_LABELS[i], is_today: date === todayDate, status });
+  }
+  return days;
+}
+
 // Full picture of a given day: every category, every item's logged amount
 // vs its max, category usage % (can exceed 100), calories/macros consumed
 // (uncapped — overeating a category inflates its calories proportionally),
@@ -305,6 +404,8 @@ function getTodayStatus(userId, date) {
       fat: FAT_TARGET_G,
     },
     categories,
+    streak: computeStreak(userId, date),
+    week: getWeeklyHistory(userId, date),
   };
 }
 
