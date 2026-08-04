@@ -190,6 +190,7 @@ function buildEveningSummaryMessage(status) {
     '',
     `🔥 <b>${Math.round(status.total_calories)} / ${Math.round(target)} ккал</b>  (${pct}%)`,
     adherenceLine,
+    `🔥 <b>Серія: ${status.streak} ${status.streak === 1 ? 'день' : 'днів'} поспіль</b>`,
     '',
     ...catLines,
   ].join('\n');
