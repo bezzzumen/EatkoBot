@@ -183,12 +183,19 @@ const round1 = (n) => Math.round(n * 10) / 10;
 let CATALOG = null;
 let STATE = null;
 
+// Reserved key inside a day-log object for the "Погане ЇДЛО" (junk calories)
+// feature — a direct kcal counter, not a product. Safe from collisions since
+// real product_key values are always `${category_key}_${index}` and never
+// start with double underscores.
+const JUNK_KEY = '__junk_kcal';
+
 function totalCaloriesForDay(dayLog) {
   if (!dayLog) return null;
-  const keys = Object.keys(dayLog);
-  if (!keys.length) return null; // no meaningful entries = unlogged
+  const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+  const productKeys = Object.keys(dayLog).filter((k) => k !== JUNK_KEY);
+  if (!productKeys.length && junkKcal <= 0) return null; // nothing logged at all that day
 
-  let total = 0;
+  let total = junkKcal;
   for (const cat of CATALOG.categories) {
     let ratio = 0;
     for (const item of cat.items) {
@@ -288,6 +295,12 @@ function computeDayStatus(dayLog) {
     };
   });
 
+  // "Погане ЇДЛО" — direct kcal entry, added straight to the daily total.
+  // Deliberately NOT folded into any category's own calories/usage, and NOT
+  // added to macro totals (no macro breakdown exists for arbitrary junk food).
+  const junkKcal = round1(Math.max(0, Number(dayLog[JUNK_KEY]) || 0));
+  totalCalories += junkKcal;
+
   return {
     total_calories: round1(totalCalories),
     totals: {
@@ -297,6 +310,7 @@ function computeDayStatus(dayLog) {
       fat: round1(totalFat),
     },
     categories,
+    junk: { kcal: junkKcal },
   };
 }
 
@@ -446,7 +460,7 @@ let openCategories = new Set();
 function renderCategories() {
   const container = document.getElementById('categoriesContainer');
 
-  container.innerHTML = STATE.categories
+  const categoryCardsHtml = STATE.categories
     .map((cat) => {
       const isOpen = openCategories.has(cat.category_key);
       const pillClass = cat.status;
@@ -495,7 +509,28 @@ function renderCategories() {
     })
     .join('');
 
-  container.querySelectorAll('.cat-header').forEach((header) => {
+  // Standalone "Погане ЇДЛО" card — direct kcal entry, no items, no expand;
+  // tapping it opens the junk-kcal sheet immediately (see openJunkSheet()).
+  const junkKcal = STATE.junk ? STATE.junk.kcal : 0;
+  const junkCardHtml = `
+    <section class="cat-card glass junk-card" id="junkCard">
+      <div class="cat-header">
+        <div class="left">
+          <div class="cat-emoji">😡</div>
+          <div class="titles">
+            <h3>Погане ЇДЛО</h3>
+            <div class="sub">Мусорні калорії</div>
+          </div>
+        </div>
+        <div class="right">
+          <div class="status-pill junk-pill">${Math.round(junkKcal)} ккал</div>
+        </div>
+      </div>
+    </section>`;
+
+  container.innerHTML = categoryCardsHtml + junkCardHtml;
+
+  container.querySelectorAll('.cat-card:not(.junk-card) .cat-header').forEach((header) => {
     header.addEventListener('click', () => {
       const card = header.closest('.cat-card');
       const key = card.dataset.category;
@@ -511,6 +546,11 @@ function renderCategories() {
       haptic('impact', 'light');
       openLogSheet(row.dataset.product);
     });
+  });
+
+  document.getElementById('junkCard')?.addEventListener('click', () => {
+    haptic('impact', 'light');
+    openJunkSheet();
   });
 }
 
@@ -663,6 +703,119 @@ function openLogSheet(productKey) {
     const previewHtml = sheetState.pendingDelta
       ? `Новий підсумок: <b>${fmtNum(previewTotal)}${escapeHtml(item.unit)}</b> (${Math.round(item.max_grams ? (previewTotal / item.max_grams) * 100 : 0)}%)`
       : '';
+    if (previewEl) {
+      if (previewHtml) previewEl.innerHTML = previewHtml;
+      else previewEl.remove();
+    } else if (previewHtml) {
+      const div = document.createElement('div');
+      div.className = 'preview-line';
+      div.innerHTML = previewHtml;
+      sheetContent.querySelector('.sheet-scroll').appendChild(div);
+    }
+  }
+
+  render();
+  openSheet();
+}
+
+// --- Junk-kcal sheet: "Погане ЇДЛО" — direct kcal entry, no grams, no max ---
+
+const JUNK_QUICK_ADDS = [100, 250, 500];
+
+function openJunkSheet() {
+  sheetEmoji.textContent = '😡';
+  sheetTitle.textContent = 'Погане ЇДЛО';
+  sheetSub.textContent = 'Прямий ввід калорій — не впливає на інші категорії';
+
+  const currentJunk = STATE.junk ? STATE.junk.kcal : 0;
+  const sheetState = { pendingDelta: 0, source: null };
+
+  function render() {
+    const previewTotal = Math.max(0, currentJunk + sheetState.pendingDelta);
+
+    sheetContent.innerHTML = `
+      <div class="sheet-scroll">
+        <div class="current-logged">
+          <span class="label">Залоговано сьогодні</span>
+          <span class="value mono">${fmtNum(currentJunk)} ккал</span>
+        </div>
+
+        <div class="quick-add-label">Швидко додати</div>
+        <div class="quick-add-row">
+          ${JUNK_QUICK_ADDS.map((k) => `
+            <button data-quick="${k}" class="${sheetState.source === 'quick' && sheetState.pendingDelta === k ? 'selected' : ''}">+${k} ккал</button>
+          `).join('')}
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Або введіть точну кількість калорій</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="customInput" placeholder="напр. 350" value="${sheetState.source === 'custom' && sheetState.pendingDelta ? sheetState.pendingDelta : ''}" />
+            <div class="unit-label">ккал</div>
+          </div>
+        </div>
+
+        ${sheetState.pendingDelta ? `<div class="preview-line">Новий підсумок: <b>${fmtNum(previewTotal)} ккал</b></div>` : ''}
+      </div>
+      <div class="sheet-footer">
+        <button class="confirm-btn" id="confirmBtn" ${sheetState.pendingDelta ? '' : 'disabled'}>Підтвердити</button>
+      </div>
+    `;
+
+    bind();
+  }
+
+  function bind() {
+    sheetContent.querySelectorAll('[data-quick]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        haptic('impact', 'light');
+        const k = Number(btn.dataset.quick);
+        sheetState.pendingDelta = sheetState.source === 'quick' && sheetState.pendingDelta === k ? 0 : k;
+        sheetState.source = sheetState.pendingDelta ? 'quick' : null;
+        render();
+      });
+    });
+
+    const customInput = document.getElementById('customInput');
+    customInput?.addEventListener('input', () => {
+      const val = parseFloat(customInput.value);
+      sheetState.pendingDelta = Number.isFinite(val) && val !== 0 ? val : 0;
+      sheetState.source = sheetState.pendingDelta ? 'custom' : null;
+      updatePreview();
+    });
+
+    const confirmBtn = document.getElementById('confirmBtn');
+    confirmBtn?.addEventListener('click', async () => {
+      confirmBtn.disabled = true;
+      haptic('impact', 'medium');
+      try {
+        const dayLog = await loadDayLog(TODAY);
+        dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + sheetState.pendingDelta);
+        await saveDayLog(TODAY, dayLog);
+
+        haptic('notification', 'success');
+        await refreshState();
+        closeSheet();
+      } catch (err) {
+        haptic('notification', 'error');
+        showToast(err.message);
+        confirmBtn.disabled = false;
+      }
+    });
+  }
+
+  function updatePreview() {
+    const confirmBtn = document.getElementById('confirmBtn');
+    if (confirmBtn) confirmBtn.disabled = !sheetState.pendingDelta;
+
+    sheetContent.querySelectorAll('[data-quick]').forEach((btn) => {
+      const k = Number(btn.dataset.quick);
+      btn.classList.toggle('selected', sheetState.source === 'quick' && sheetState.pendingDelta === k);
+    });
+
+    let previewEl = sheetContent.querySelector('.preview-line');
+    const previewTotal = Math.max(0, currentJunk + sheetState.pendingDelta);
+    const previewHtml = sheetState.pendingDelta ? `Новий підсумок: <b>${fmtNum(previewTotal)} ккал</b>` : '';
     if (previewEl) {
       if (previewHtml) previewEl.innerHTML = previewHtml;
       else previewEl.remove();
