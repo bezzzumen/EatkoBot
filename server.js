@@ -33,6 +33,11 @@ const PORT = process.env.PORT || 3000;
 const WEBAPP_URL = process.env.WEBAPP_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Fixed recipient for the GET-triggered evening nudge (see the route below)
+// — an external cron pinger can't carry Telegram's signed initData, so
+// there's no way to identify "the requesting user" the way the POST route
+// does. This assumes a single-recipient/personal-use bot.
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 if (!BOT_TOKEN || BOT_TOKEN === 'your_token_here') {
   console.error('\n[!] BOT_TOKEN is not set. Put your real token in the .env file.\n');
@@ -42,6 +47,12 @@ if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
   console.warn(
     '\n[!] GEMINI_API_KEY is not set — /api/trigger-evening-summary will still work, ' +
     'but will fall back to a static line instead of an AI-generated one.\n'
+  );
+}
+if (!TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID === 'your_telegram_chat_id_here') {
+  console.warn(
+    '\n[!] TELEGRAM_CHAT_ID is not set — GET /api/trigger-evening-summary (the cron-job.org ' +
+    'route) will respond with an error until it\u2019s configured in .env.\n'
   );
 }
 
@@ -220,7 +231,8 @@ function buildSummaryMessage({ total_calories, daily_calorie_target, streak, cat
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// --- API routes (registered before static file serving) ---
 
 // Static, read-only reference data: the 8 categories, their items, and the
 // calorie/macro goals. No user data flows through this one, so no auth.
@@ -228,9 +240,50 @@ app.get('/api/catalog', (req, res) => {
   res.json(CATALOG);
 });
 
-// Triggered by the client with today's already-computed status. Generates
-// the fortune-cookie / cozy-note line via Gemini, assembles the full
-// Telegram message, and sends it to the requesting user.
+// Cron-safe trigger: hit by an external pinger (e.g. cron-job.org) or a
+// plain browser visit — no request body, no Telegram initData, since
+// neither exists outside the actual Mini App. Because of that, this can't
+// know a specific day's real numbers (those live only in that user's
+// CloudStorage), so it always sends the upbeat fortune-cookie style to a
+// fixed recipient, plus a button nudging them to open the app for their
+// real stats. This doubles as a way to wake a sleeping Render free-tier
+// instance on a schedule, which internal cron can't do while asleep.
+app.get('/api/trigger-evening-summary', async (req, res) => {
+  if (!TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID === 'your_telegram_chat_id_here') {
+    return res.status(500).json({ error: 'TELEGRAM_CHAT_ID is not set in .env' });
+  }
+
+  try {
+    const fortuneLine = await getFortuneLine(true); // no real day data available here — always the upbeat style
+
+    const message = [
+      '📊 <b>Eatko: Час для вечірнього підсумку!</b>',
+      '',
+      fortuneLine,
+      '',
+      'Відкрий застосунок, щоб побачити свою статистику за сьогодні. 👇',
+      '',
+      'Гарного відпочинку! 🌙',
+    ].join('\n');
+
+    const hasWebAppUrl = WEBAPP_URL && !WEBAPP_URL.includes('your-public-url-here');
+    const keyboard = hasWebAppUrl ? new InlineKeyboard().webApp('🍽️ Відкрити Eatko', WEBAPP_URL) : undefined;
+
+    await bot.api.sendMessage(TELEGRAM_CHAT_ID, message, { parse_mode: 'HTML', reply_markup: keyboard });
+    res.json({ sent: true });
+  } catch (err) {
+    console.error('[trigger-evening-summary GET] failed:', err.message);
+    res.status(502).json({ error: 'Failed to send the evening nudge' });
+  }
+});
+
+// Client-triggered (not wired up in public/app.js yet): called with today's
+// already-computed status, real Telegram initData included. Generates the
+// fortune-cookie / cozy-note line via Gemini based on the ACTUAL day
+// outcome, assembles the full personalized summary, and sends it to the
+// requesting user specifically. This is the one to use once the client
+// calls it itself — the GET route above is a fallback for when nothing is
+// actively running client-side to trigger it.
 app.post('/api/trigger-evening-summary', async (req, res) => {
   const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
   if (!tgUser) {
@@ -261,6 +314,9 @@ app.post('/api/trigger-evening-summary', async (req, res) => {
     res.status(502).json({ error: 'Failed to send the evening summary' });
   }
 });
+
+// --- Static file serving (after API routes) ---
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------------------
 // Telegram bot
