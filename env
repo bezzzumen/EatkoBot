@@ -18,5 +18,5 @@ GEMINI_MODEL=gemini-2.5-flash
 # data — so it always messages this one chat). Your numeric Telegram user
 # ID — get it by messaging @userinfobot on Telegram, or check the "id" field
 # after opening the WebApp once and looking at your own /start message logs.
-TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+TELEGRAM_CHAT_ID=304206390
 
