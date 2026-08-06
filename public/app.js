@@ -426,13 +426,25 @@ function setMacro(key, value, goal) {
 // Streak badge + weekly history row
 // ---------------------------------------------------------------------------
 
+// Ukrainian noun inflection for "день": 1/21/31... -> ДЕНЬ, 2-4/22-24... -> ДНІ,
+// 0/5-9/10/11-14/25... -> ДНІВ. The 11-14 special case must be checked before
+// the last-digit rule, since e.g. 12 ends in "2" but still takes ДНІВ.
+function pluralizeDays(n) {
+  const mod100 = Math.abs(n) % 100;
+  const mod10 = mod100 % 10;
+  if (mod100 >= 11 && mod100 <= 14) return 'ДНІВ';
+  if (mod10 === 1) return 'ДЕНЬ';
+  if (mod10 >= 2 && mod10 <= 4) return 'ДНІ';
+  return 'ДНІВ';
+}
+
 function renderStreak() {
   const streak = STATE.streak || 0;
   const badge = document.getElementById('streakBadge');
   const text = document.getElementById('streakText');
 
   badge.classList.toggle('zero', streak === 0);
-  text.textContent = `${streak} ДНІВ ПОСПІЛЬ`;
+  text.textContent = `${streak} ${pluralizeDays(streak)} ПОСПІЛЬ`;
 }
 
 const WEEK_STATUS_EMOJI = { success: '🔥', over: '❌', unlogged: '⚪', future: '⚪' };
@@ -584,6 +596,18 @@ function openLogSheet(productKey) {
   sheetTitle.textContent = item.product_name;
   sheetSub.textContent = cat.category_name;
 
+  // How many more grams of THIS item could still be logged before the
+  // CATEGORY as a whole reaches 100% — accounting for whatever's already
+  // been logged against every item in the category, not just this one.
+  // Every item in a category is calibrated so that logging its own
+  // max_grams alone would fully use the category's target_calories, so
+  // this item's kcal-per-gram is target_calories / item.max_grams.
+  const categoryRemainingKcal = cat.target_calories - cat.calories_consumed;
+  const productKcalPerGram = item.max_grams ? cat.target_calories / item.max_grams : 0;
+  const remainingGramsFor100 = productKcalPerGram > 0
+    ? Math.max(0, Math.floor(categoryRemainingKcal / productKcalPerGram))
+    : 0;
+
   const sheetState = { pendingDelta: 0, source: null };
 
   function currentStatusClass(logged) {
@@ -603,6 +627,8 @@ function openLogSheet(productKey) {
           <span class="label">Зараз залоговано</span>
           <span class="value mono ${currentStatusClass(item.logged_grams)}">${fmtNum(item.logged_grams)}${escapeHtml(item.unit)} / ${fmtNum(item.max_grams)}${escapeHtml(item.unit)}</span>
         </div>
+
+        <div class="remaining-hint">Максимум до 100%: ще <b>${fmtNum(remainingGramsFor100)}${escapeHtml(item.unit)}</b> ${escapeHtml(item.product_name)}</div>
 
         <div class="quick-add-label">Швидко додати</div>
         <div class="quick-add-row">
@@ -830,24 +856,6 @@ function openJunkSheet() {
   render();
   openSheet();
 }
-
-// ---------------------------------------------------------------------------
-// Reset
-// ---------------------------------------------------------------------------
-
-document.getElementById('resetBtn').addEventListener('click', async () => {
-  haptic('impact', 'medium');
-  if (!confirm("Очистити весь сьогоднішній прогрес? Це не можна скасувати.")) return;
-  try {
-    dayLogCache.delete(TODAY);
-    await storageRemoveItem(LOG_KEY_PREFIX + TODAY);
-    haptic('notification', 'warning');
-    await refreshState();
-  } catch (err) {
-    haptic('notification', 'error');
-    showToast(err.message);
-  }
-});
 
 // ---------------------------------------------------------------------------
 
