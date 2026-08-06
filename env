@@ -1,0 +1,14 @@
+BOT_TOKEN=8906209369:AAGxxk3fUCnoB-ffseA45_h0OSweAD2JE5M
+PORT=3000
+
+# Public HTTPS URL where this server is reachable (needed for the Telegram WebApp button).
+# While testing locally you can generate one with a tunnel tool like ngrok/cloudflared,
+# then paste it here, e.g. WEBAPP_URL=https://abcd1234.ngrok-free.app
+WEBAPP_URL=https://your-public-url-here
+
+# Used by POST /api/trigger-evening-summary to generate the fortune-cookie /
+# cozy-note line. Get a key at https://aistudio.google.com/apikey — if left
+# unset, that endpoint still works but falls back to a static line instead
+# of an AI-generated one.
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
