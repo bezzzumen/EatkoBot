@@ -12,3 +12,11 @@ WEBAPP_URL=https://your-public-url-here
 # of an AI-generated one.
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash
+
+# Fixed recipient for GET /api/trigger-evening-summary (meant to be hit by
+# an external cron pinger like cron-job.org, which can't send Telegram auth
+# data — so it always messages this one chat). Your numeric Telegram user
+# ID — get it by messaging @userinfobot on Telegram, or check the "id" field
+# after opening the WebApp once and looking at your own /start message logs.
+TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+
