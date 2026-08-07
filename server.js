@@ -26,18 +26,25 @@ const crypto = require('crypto');
 const express = require('express');
 const { Bot, InlineKeyboard } = require('grammy');
 
-const { CATALOG } = require('./database');
+const db = require('./database');
+const { CATALOG } = db;
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 3000;
 const WEBAPP_URL = process.env.WEBAPP_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-// Fixed recipient for the GET-triggered evening nudge (see the route below)
-// — an external cron pinger can't carry Telegram's signed initData, so
-// there's no way to identify "the requesting user" the way the POST route
-// does. This assumes a single-recipient/personal-use bot.
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// The diet's "day" always means a calendar day in Kyiv time, no matter what
+// timezone the server itself runs in.
+const DIET_TIMEZONE = 'Europe/Kyiv';
+function todayISO(timeZone = DIET_TIMEZONE) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${map.year}-${map.month}-${map.day}`;
+}
 
 if (!BOT_TOKEN || BOT_TOKEN === 'your_token_here') {
   console.error('\n[!] BOT_TOKEN is not set. Put your real token in the .env file.\n');
@@ -47,12 +54,6 @@ if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
   console.warn(
     '\n[!] GEMINI_API_KEY is not set — /api/trigger-evening-summary will still work, ' +
     'but will fall back to a static line instead of an AI-generated one.\n'
-  );
-}
-if (!TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID === 'your_telegram_chat_id_here') {
-  console.warn(
-    '\n[!] TELEGRAM_CHAT_ID is not set — GET /api/trigger-evening-summary (the cron-job.org ' +
-    'route) will respond with an error until it\u2019s configured in .env.\n'
   );
 }
 
@@ -240,79 +241,85 @@ app.get('/api/catalog', (req, res) => {
   res.json(CATALOG);
 });
 
-// Cron-safe trigger: hit by an external pinger (e.g. cron-job.org) or a
-// plain browser visit — no request body, no Telegram initData, since
-// neither exists outside the actual Mini App. Because of that, this can't
-// know a specific day's real numbers (those live only in that user's
-// CloudStorage), so it always sends the upbeat fortune-cookie style to a
-// fixed recipient, plus a button nudging them to open the app for their
-// real stats. This doubles as a way to wake a sleeping Render free-tier
-// instance on a schedule, which internal cron can't do while asleep.
-app.get('/api/trigger-evening-summary', async (req, res) => {
-  if (!TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID === 'your_telegram_chat_id_here') {
-    return res.status(500).json({ error: 'TELEGRAM_CHAT_ID is not set in .env' });
-  }
-
-  try {
-    const fortuneLine = await getFortuneLine(true); // no real day data available here — always the upbeat style
-
-    const message = [
-      '📊 <b>Eatko: Час для вечірнього підсумку!</b>',
-      '',
-      fortuneLine,
-      '',
-      'Відкрий застосунок, щоб побачити свою статистику за сьогодні. 👇',
-      '',
-      'Гарного відпочинку! 🌙',
-    ].join('\n');
-
-    const hasWebAppUrl = WEBAPP_URL && !WEBAPP_URL.includes('your-public-url-here');
-    const keyboard = hasWebAppUrl ? new InlineKeyboard().webApp('🍽️ Відкрити Eatko', WEBAPP_URL) : undefined;
-
-    await bot.api.sendMessage(TELEGRAM_CHAT_ID, message, { parse_mode: 'HTML', reply_markup: keyboard });
-    res.json({ sent: true });
-  } catch (err) {
-    console.error('[trigger-evening-summary GET] failed:', err.message);
-    res.status(502).json({ error: 'Failed to send the evening nudge' });
-  }
-});
-
-// Client-triggered (not wired up in public/app.js yet): called with today's
-// already-computed status, real Telegram initData included. Generates the
-// fortune-cookie / cozy-note line via Gemini based on the ACTUAL day
-// outcome, assembles the full personalized summary, and sends it to the
-// requesting user specifically. This is the one to use once the client
-// calls it itself — the GET route above is a fallback for when nothing is
-// actively running client-side to trigger it.
-app.post('/api/trigger-evening-summary', async (req, res) => {
+// Called by the client (public/app.js) after every log action, with the
+// day's status it already computed locally. Upserts one row per (user,
+// date) — this is the ONLY thing persisted server-side; the actual food
+// logs stay in the client's CloudStorage as before. Requires real Telegram
+// initData, both to know who's syncing and to stop an arbitrary caller from
+// writing fake data under someone else's account.
+app.post('/api/sync-status', async (req, res) => {
   const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
   if (!tgUser) {
     return res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
   }
 
-  const { total_calories, daily_calorie_target, streak, categories } = req.body || {};
-  if (total_calories == null || daily_calorie_target == null || !Array.isArray(categories)) {
-    return res.status(400).json({ error: 'total_calories, daily_calorie_target and categories are required' });
+  const { date, total_calories, daily_calorie_target, streak, categories } = req.body || {};
+  if (!date || total_calories == null || daily_calorie_target == null || !Array.isArray(categories)) {
+    return res.status(400).json({ error: 'date, total_calories, daily_calorie_target and categories are required' });
   }
 
-  const isSuccessful = total_calories <= daily_calorie_target;
+  if (!db.isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+  }
 
   try {
-    const fortuneLine = await getFortuneLine(isSuccessful);
-    const message = buildSummaryMessage({
-      total_calories,
-      daily_calorie_target,
-      streak: streak || 0,
-      categories,
-      fortuneLine,
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
     });
-
-    await bot.api.sendMessage(tgUser.id, message, { parse_mode: 'HTML' });
-    res.json({ sent: true });
+    await db.upsertDailyStatus(userId, date, { total_calories, daily_calorie_target, streak, categories });
+    res.json({ synced: true });
   } catch (err) {
-    console.error('[trigger-evening-summary] failed:', err.message);
-    res.status(502).json({ error: 'Failed to send the evening summary' });
+    console.error('[sync-status] failed:', err.message);
+    res.status(502).json({ error: 'Failed to sync status' });
   }
+});
+
+// The evening broadcast: hit by an external pinger (e.g. cron-job.org) or a
+// plain browser visit — no request body, no Telegram initData needed, since
+// it isn't acting on behalf of any one user. Instead it looks up every user
+// who has synced a status for TODAY (via POST /api/sync-status above) and
+// sends each of them their own personalized, Gemini-generated summary. This
+// also doubles as a way to wake a sleeping Render free-tier instance on a
+// schedule, which internal cron can't do while the instance is asleep.
+app.get('/api/trigger-evening-summary', async (req, res) => {
+  if (!db.isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+  }
+
+  const date = todayISO();
+
+  let users;
+  try {
+    users = await db.getAllStatusForDate(date);
+  } catch (err) {
+    console.error('[trigger-evening-summary] failed to load statuses:', err.message);
+    return res.status(502).json({ error: 'Failed to load user statuses' });
+  }
+
+  let sentCount = 0;
+  for (const u of users) {
+    try {
+      const isSuccessful = u.total_calories <= u.daily_calorie_target;
+      const fortuneLine = await getFortuneLine(isSuccessful); // unique per user, based on THEIR actual day
+      const message = buildSummaryMessage({
+        total_calories: u.total_calories,
+        daily_calorie_target: u.daily_calorie_target,
+        streak: u.streak,
+        categories: u.categories,
+        fortuneLine,
+      });
+      await bot.api.sendMessage(u.telegram_id, message, { parse_mode: 'HTML' });
+      sentCount++;
+    } catch (err) {
+      // One user's message failing (e.g. they blocked the bot) shouldn't
+      // stop everyone else from getting theirs.
+      console.error(`[trigger-evening-summary] failed for user ${u.telegram_id}:`, err.message);
+    }
+  }
+
+  res.json({ success: true, count: sentCount, message: `Summaries sent to ${sentCount} users` });
 });
 
 // --- Static file serving (after API routes) ---
@@ -352,9 +359,16 @@ bot.catch((err) => {
 // Boot
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(`✅ Server listening on http://localhost:${PORT}`);
-});
+db.ensureSchema()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`✅ Server listening on http://localhost:${PORT}`);
+    });
 
-bot.start();
-console.log('✅ Telegram bot is polling for updates');
+    bot.start();
+    console.log('✅ Telegram bot is polling for updates');
+  })
+  .catch((err) => {
+    console.error('[!] Failed to set up the database schema:', err.message);
+    process.exit(1);
+  });
