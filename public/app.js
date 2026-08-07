@@ -20,6 +20,12 @@ if (tg) {
   document.documentElement.dataset.theme = 'dark';
 }
 
+// Needed again for POST /api/sync-status — a real Telegram session's signed
+// initData, verified server-side, so the evening-broadcast database knows
+// which Telegram user a synced status belongs to. Empty outside Telegram
+// (e.g. desktop browser testing), in which case syncing is simply skipped.
+const INIT_DATA = tg?.initData || '';
+
 function haptic(type, style) {
   const h = tg?.HapticFeedback;
   if (!h) return;
@@ -378,6 +384,70 @@ async function refreshState() {
 
   renderHero();
   renderCategories();
+
+  syncDailyStatus(); // fire-and-forget — never blocks the UI on network
+}
+
+// Pushes today's already-computed status to the server, so the evening
+// broadcast (GET /api/trigger-evening-summary, run by an external cron
+// pinger) has something to send. Best-effort: a failure here never affects
+// the local experience, since CloudStorage/localStorage remains the real
+// source of truth for the user's own view of their day.
+//
+// IMPORTANT: fetch() only rejects on actual network failures — it resolves
+// normally for HTTP error responses like 401/500/502. Earlier this went
+// unchecked, so a server-side error (e.g. Turso not configured yet) failed
+// completely silently: the request "succeeded" from fetch()'s point of
+// view while the server did nothing, and nothing was logged anywhere. This
+// explicitly checks res.ok and surfaces the real error now.
+let syncFailureToastShown = false;
+
+async function syncDailyStatus() {
+  if (!INIT_DATA) {
+    console.warn('[sync] Skipped — no Telegram initData (not running inside a real Telegram session).');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/sync-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': INIT_DATA,
+      },
+      body: JSON.stringify({
+        date: TODAY,
+        total_calories: STATE.totals.calories,
+        daily_calorie_target: STATE.goals.calories,
+        streak: STATE.streak,
+        // Category-level summary only (matches what the broadcast message
+        // needs) — not the per-item gram breakdown, which stays local.
+        categories: STATE.categories.map((c) => ({
+          category_key: c.category_key,
+          category_name: c.category_name,
+          emoji: c.emoji,
+          target_calories: c.target_calories,
+          usage_percent: c.usage_percent,
+          calories_consumed: c.calories_consumed,
+          status: c.status,
+        })),
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Sync failed with status ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[sync] Background status sync failed:', err.message);
+    // Surface it once per session, quietly, so it's actually discoverable
+    // without opening devtools — but doesn't nag on every log action if the
+    // underlying cause (e.g. Turso misconfigured) keeps failing repeatedly.
+    if (!syncFailureToastShown) {
+      syncFailureToastShown = true;
+      showToast('Не вдалося синхронізувати підсумки дня із сервером.');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
