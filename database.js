@@ -79,10 +79,153 @@ function buildCatalog() {
 // Built once at process boot — purely derived from seed-data.js, no I/O.
 const CATALOG = buildCatalog();
 
+// -----------------------------------------------------------------------------
+// Persistence (Turso) — re-added for the multi-user evening broadcast feature.
+//
+// Daily LOGGING (grams against products) still lives entirely in each user's
+// own Telegram CloudStorage/localStorage — that part hasn't changed, and this
+// database does NOT store food logs. What it stores is a lightweight DAILY
+// SUMMARY that the client pushes here after computing it locally (see
+// syncDailyStatus() in public/app.js): total calories, streak, and a
+// category-level breakdown. That's the minimum needed for the server to
+// later loop over every user and send each their personalized evening
+// message — something it has no way to do by reading CloudStorage directly
+// (there's no API for that), so the client has to hand it over.
+//
+// Uses @tursodatabase/serverless: zero native dependencies (pure fetch),
+// specifically to avoid a repeat of the better-sqlite3 native-binary ABI
+// mismatch this project hit deploying to Render previously.
+// -----------------------------------------------------------------------------
+
+const { createClient } = require('@tursodatabase/serverless/compat');
+
+const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL;
+const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
+
+let turso = null;
+if (TURSO_DATABASE_URL && TURSO_AUTH_TOKEN) {
+  turso = createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+} else {
+  console.warn(
+    '\n[!] TURSO_DATABASE_URL / TURSO_AUTH_TOKEN not set — daily status sync ' +
+    '(POST /api/sync-status) and the evening broadcast (GET /api/trigger-evening-summary) ' +
+    'will not work until both are configured.\n'
+  );
+}
+
+function isDatabaseConfigured() {
+  return !!turso;
+}
+
+async function ensureSchema() {
+  if (!turso) return;
+
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id TEXT UNIQUE NOT NULL,
+      first_name TEXT,
+      username TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  // One row per (user, date) — a snapshot of that day's totals, upserted
+  // every time the client syncs. Only the latest snapshot per day is kept.
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS daily_status (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      log_date             TEXT NOT NULL,
+      total_calories       REAL NOT NULL,
+      daily_calorie_target REAL NOT NULL,
+      streak               INTEGER NOT NULL DEFAULT 0,
+      categories_json      TEXT NOT NULL,
+      updated_at           TEXT DEFAULT (datetime('now')),
+      UNIQUE(user_id, log_date)
+    )
+  `);
+}
+
+async function getOrCreateUser({ telegram_id, first_name, username }) {
+  if (!turso) throw new Error('Database not configured');
+
+  const existing = await turso.execute({
+    sql: 'SELECT id, first_name, username FROM users WHERE telegram_id = ?',
+    args: [String(telegram_id)],
+  });
+
+  if (existing.rows.length) {
+    const row = existing.rows[0];
+    await turso.execute({
+      sql: 'UPDATE users SET first_name = ?, username = ? WHERE id = ?',
+      args: [first_name || row.first_name || null, username || row.username || null, row.id],
+    });
+    return Number(row.id);
+  }
+
+  const info = await turso.execute({
+    sql: 'INSERT INTO users (telegram_id, first_name, username) VALUES (?, ?, ?)',
+    args: [String(telegram_id), first_name || null, username || null],
+  });
+  return Number(info.lastInsertRowid);
+}
+
+// Upserts today's (or any date's) computed status for a user. Called by
+// POST /api/sync-status, which the client hits after every log action.
+async function upsertDailyStatus(userId, date, { total_calories, daily_calorie_target, streak, categories }) {
+  if (!turso) throw new Error('Database not configured');
+
+  await turso.execute({
+    sql: `
+      INSERT INTO daily_status (user_id, log_date, total_calories, daily_calorie_target, streak, categories_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, log_date) DO UPDATE SET
+        total_calories = excluded.total_calories,
+        daily_calorie_target = excluded.daily_calorie_target,
+        streak = excluded.streak,
+        categories_json = excluded.categories_json,
+        updated_at = datetime('now')
+    `,
+    args: [userId, date, total_calories, daily_calorie_target, streak || 0, JSON.stringify(categories || [])],
+  });
+}
+
+// Every user's synced status for a given date — what the evening broadcast
+// loops over. Users who never synced anything for that date simply won't
+// appear (there's nothing to send them).
+async function getAllStatusForDate(date) {
+  if (!turso) return [];
+
+  const result = await turso.execute({
+    sql: `
+      SELECT u.telegram_id, u.first_name, d.total_calories, d.daily_calorie_target, d.streak, d.categories_json
+      FROM daily_status d
+      JOIN users u ON u.id = d.user_id
+      WHERE d.log_date = ?
+    `,
+    args: [date],
+  });
+
+  return result.rows.map((row) => ({
+    telegram_id: row.telegram_id,
+    first_name: row.first_name,
+    total_calories: row.total_calories,
+    daily_calorie_target: row.daily_calorie_target,
+    streak: row.streak,
+    categories: JSON.parse(row.categories_json || '[]'),
+  }));
+}
+
 module.exports = {
   CATALOG,
   DAILY_CALORIE_TARGET,
   PROTEIN_TARGET_G,
   CARBS_TARGET_G,
   FAT_TARGET_G,
+  isDatabaseConfigured,
+  ensureSchema,
+  getOrCreateUser,
+  upsertDailyStatus,
+  getAllStatusForDate,
 };
