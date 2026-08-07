@@ -97,7 +97,7 @@ const CATALOG = buildCatalog();
 // mismatch this project hit deploying to Render previously.
 // -----------------------------------------------------------------------------
 
-const { createClient } = require('@tursodatabase/serverless/compat');
+const { createClient } = require('@libsql/client');
 
 const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
