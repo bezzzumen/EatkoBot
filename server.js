@@ -149,10 +149,54 @@ const OVER_SYSTEM_INSTRUCTION = `Ти пишеш коротку, затишну,
 
 Згенеруй ОДНУ нову нотатку в такому ж дусі. У відповіді — лише сам текст, без лапок, без префіксів, без пояснень.`;
 
-const FALLBACK_SUCCESS_LINE = 'Іноді найкраща відповідь на складний день — просто дати йому закінчитися самому.';
-const FALLBACK_OVER_LINE = 'Не кожен день мусить бути ідеальним. Видихай і відпочивай.';
+// Varied fallback pools (used when Gemini is unavailable, AND as a backstop
+// when Gemini keeps producing something we've already sent recently — see
+// getFortuneLine below). Each respects the same constraints as the Gemini
+// prompts: no food/calories/diet/exercise, no hustle-culture motivation.
+const FALLBACK_SUCCESS_LINES = [
+  'Іноді найважливіший крок за день — це просто дозволити речам іти своїм чередом.',
+  'Незабаром ви отримаєте новину з боку, звідки найменше її чекаєте.',
+  'Спокій — це не відсутність думок, а вміння не обирати кожну з них.',
+  'Завтра чудовий день, щоб нарешті закрити одну зі старих вкладок у голові.',
+  'Хтось згадає про вас сьогодні ввечері — і посміхнеться.',
+  'Найкращі рішення часто приходять саме тоді, коли ви перестаєте їх шукати.',
+  'Той дзвінок, який ви відкладаєте, насправді чекає на вас, а не навпаки.',
+  'Іноді загублена річ сама знаходить дорогу назад — просто не зараз.',
+  'Ваша інтуїція вже знає відповідь; питання лише в тому, чи ви їй довіряєте.',
+  'Одна маленька зміна звички здатна непомітно змінити цілий тиждень.',
+];
+const FALLBACK_OVER_LINES = [
+  'Ідеальність нудна. Найкращі історії завжди відбуваються там, де щось пішло не за планом. Видихай і відпочивай.',
+  'Не кожен день мусить бути ідеальним. Видихай і відпочивай.',
+  'Навіть найрівніша дорога іноді петляє — і це нормально.',
+  'Дозволь собі сьогодні просто побути, без жодних підсумків і висновків.',
+  'Рівновага — це не пряма лінія, а танець, у якому іноді збиваєшся з ритму.',
+  'Завтра почнеться саме собою, як завжди. Сьогодні можна просто видихнути.',
+  'Найтепліші спогади рідко народжуються з ідеальних днів.',
+  'Іноді найкращий план на вечір — це взагалі відсутність плану.',
+];
 
-async function callGemini(systemInstruction) {
+// Remembers the last few lines actually sent, per branch, purely in-memory
+// (resets on restart — Render free tier especially). Used to avoid handing
+// out an exact repeat two nights running, both for Gemini output and for
+// fallback-pool picks.
+const RECENT_HISTORY_SIZE = 10;
+const recentLines = { success: [], over: [] };
+
+function rememberLine(kind, line) {
+  const arr = recentLines[kind];
+  arr.push(line);
+  if (arr.length > RECENT_HISTORY_SIZE) arr.shift();
+}
+
+function pickFreshFallback(kind) {
+  const pool = kind === 'success' ? FALLBACK_SUCCESS_LINES : FALLBACK_OVER_LINES;
+  const unused = pool.filter((line) => !recentLines[kind].includes(line));
+  const options = unused.length ? unused : pool; // if every line was used recently, allow a repeat rather than crash
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+async function callGemini(systemInstruction, userText) {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
     throw new Error('GEMINI_API_KEY is not set');
   }
@@ -165,8 +209,8 @@ async function callGemini(systemInstruction) {
     },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ role: 'user', parts: [{ text: 'Згенеруй зараз.' }] }],
-      generationConfig: { temperature: 1.0, maxOutputTokens: 120 },
+      contents: [{ role: 'user', parts: [{ text: userText }] }],
+      generationConfig: { temperature: 1.1, maxOutputTokens: 120 },
     }),
   });
 
@@ -182,19 +226,46 @@ async function callGemini(systemInstruction) {
   return text.trim().replace(/^["'«»]+|["'«»]+$/g, '').trim();
 }
 
-// Returns an emoji-prefixed line for the given day outcome, using Gemini
-// when available and falling back to a static (still on-brand) line if the
-// API key is missing or the call fails, so a Gemini outage never blocks the
-// whole summary from sending.
+// Returns an emoji-prefixed line for the given day outcome. Every call
+// injects today's date plus a fresh random salt into the prompt (so the
+// model isn't repeatedly asked the exact same question — a big part of why
+// it was returning the same cached-feeling answer), and if Gemini's result
+// matches something already sent in the last RECENT_HISTORY_SIZE nights, it
+// retries with a new salt before giving up. This makes exact repeats highly
+// unlikely, though — being honest — nothing short of a hard-coded, endlessly
+// growing blocklist could make it a true mathematical guarantee against an
+// LLM; this is a strong best-effort, not a formal proof.
+const MAX_GENERATION_ATTEMPTS = 3;
+
 async function getFortuneLine(isSuccessful) {
+  const kind = isSuccessful ? 'success' : 'over';
   const emoji = isSuccessful ? '🥠' : '✨';
-  try {
-    const text = await callGemini(isSuccessful ? SUCCESS_SYSTEM_INSTRUCTION : OVER_SYSTEM_INSTRUCTION);
-    return `${emoji} ${text}`;
-  } catch (err) {
-    console.warn('[gemini] falling back to a static line:', err.message);
-    return `${emoji} ${isSuccessful ? FALLBACK_SUCCESS_LINE : FALLBACK_OVER_LINE}`;
+  const systemInstruction = isSuccessful ? SUCCESS_SYSTEM_INSTRUCTION : OVER_SYSTEM_INSTRUCTION;
+  const date = todayISO();
+
+  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+    try {
+      const salt = crypto.randomUUID();
+      const userText =
+        `Дата: ${date}. Унікальний код цього запиту: ${salt} (спроба ${attempt} з ${MAX_GENERATION_ATTEMPTS}). ` +
+        'Згенеруй ОДНЕ нове передбачення саме для цього моменту — воно має відрізнятися від будь-яких попередніх відповідей.';
+
+      const text = await callGemini(systemInstruction, userText);
+
+      if (!recentLines[kind].includes(text)) {
+        rememberLine(kind, text);
+        return `${emoji} ${text}`;
+      }
+      // Exact repeat of something sent recently — try again with a new salt.
+    } catch (err) {
+      console.warn(`[gemini] attempt ${attempt} failed, falling back:`, err.message);
+      break; // a hard API failure won't fix itself by retrying immediately
+    }
   }
+
+  const fallback = pickFreshFallback(kind);
+  rememberLine(kind, fallback);
+  return `${emoji} ${fallback}`;
 }
 
 // ---------------------------------------------------------------------------
