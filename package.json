@@ -1,0 +1,17 @@
+{
+  "name": "diet-tracker-bot",
+  "version": "1.0.0",
+  "description": "Telegram WebApp bot for tracking a daily personalized diet regime",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@tursodatabase/serverless": "^0.4.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "grammy": "^1.28.0"
+  }
+}
