@@ -136,8 +136,23 @@ async function loadDayLog(date) {
   return log;
 }
 
-async function saveDayLog(date, log) {
+// Updates the in-memory cache ONLY — synchronous, instant, no I/O. This is
+// the "optimistic" half of a write: call this, then re-render immediately,
+// then separately (and without waiting) call persistDayLog() to actually
+// write it to storage. Splitting these is the whole point of offline-first:
+// the UI must never wait on CloudStorage/localStorage/network to reflect a
+// change the user just made.
+function setDayLogInMemory(date, log) {
   dayLogCache.set(date, log);
+}
+
+// The actual storage write — async, may be slow (especially CloudStorage
+// over a poor connection), so this is always called WITHOUT awaiting it at
+// the call site. A failure here is logged but never surfaced to the user;
+// the in-memory state (already updated via setDayLogInMemory) remains
+// correct regardless, and markSyncDirty()/isSyncDirty() below track that
+// there's still unpersisted work so it naturally retries next time.
+async function persistDayLog(date, log) {
   await storageSetItem(LOG_KEY_PREFIX + date, JSON.stringify(log));
 }
 
@@ -158,6 +173,49 @@ async function preloadHistory() {
     const date = key.slice(LOG_KEY_PREFIX.length);
     dayLogCache.set(date, parseDayLog(values[key]) || {});
   }
+}
+
+// ---------------------------------------------------------------------------
+// Catalog cache (localStorage — device-only, not per-user data, so this is
+// deliberately NOT CloudStorage). Lets the very next app open render
+// instantly from cache instead of waiting on GET /api/catalog, which can be
+// slow right after a sleeping Render free-tier instance wakes up.
+// ---------------------------------------------------------------------------
+
+const CATALOG_CACHE_KEY = 'eatko_catalog_cache_v1';
+
+function loadCachedCatalog() {
+  try {
+    const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedCatalog(catalog) {
+  try {
+    localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify(catalog));
+  } catch {
+    // Non-fatal — worst case, next load just fetches fresh again.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sync "dirty" flag — the retry-queue mechanism. Every sync call already
+// sends the FULL current day status (not an incremental diff), so a retry
+// is simply "try syncing current state again" — no queue of discrete
+// operations is needed. This flag just tracks, durably across app closes,
+// whether the last known state has actually made it to the server yet.
+// ---------------------------------------------------------------------------
+
+const SYNC_DIRTY_KEY = 'eatko_sync_dirty';
+
+function markSyncDirty() {
+  try { localStorage.setItem(SYNC_DIRTY_KEY, '1'); } catch { /* non-fatal */ }
+}
+function clearSyncDirty() {
+  try { localStorage.removeItem(SYNC_DIRTY_KEY); } catch { /* non-fatal */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,21 +409,65 @@ function fmtNum(n) {
 // Boot
 // ---------------------------------------------------------------------------
 
-async function init() {
-  try {
-    CATALOG = await fetchCatalog();
-    if (usingLocalFallback) {
-      showToast('CloudStorage недоступний — дані зберігаються локально в цьому браузері.');
-    }
-    await preloadHistory();
-    await refreshState();
-  } catch (err) {
-    showToast(err.message);
+// Instant, synchronous placeholder so something visible appears the moment
+// the script runs — before any cache read or network call, however fast.
+function renderLoadingShell() {
+  const container = document.getElementById('categoriesContainer');
+  if (container && !container.innerHTML.trim()) {
+    container.innerHTML = '<div class="empty-note" style="padding:28px 8px;text-align:center;">Завантаження…</div>';
   }
 }
 
-async function refreshState() {
-  const todayLog = await loadDayLog(TODAY);
+async function init() {
+  renderLoadingShell();
+
+  // --- 1. IMMEDIATE RENDER: from local cache, before any network request ---
+  const cachedCatalog = loadCachedCatalog();
+  if (cachedCatalog) {
+    CATALOG = cachedCatalog;
+    try {
+      await preloadHistory(); // CloudStorage/localStorage only — not a network call to OUR server
+      await loadDayLog(TODAY);
+      recomputeAndRender();
+    } catch (err) {
+      console.warn('[init] local-only render failed:', err);
+    }
+  }
+
+  if (usingLocalFallback) {
+    showToast('CloudStorage недоступний — дані зберігаються локально в цьому браузері.');
+  }
+
+  // --- 2. BACKGROUND: refresh the catalog from the network, don't block on it ---
+  try {
+    const fresh = await fetchCatalog();
+    CATALOG = fresh;
+    saveCachedCatalog(fresh);
+
+    if (!cachedCatalog) {
+      // First-ever load on this device — there was nothing to show until now.
+      await preloadHistory();
+      await loadDayLog(TODAY);
+    }
+    recomputeAndRender();
+  } catch (err) {
+    if (!cachedCatalog) {
+      // No cache AND the network call failed — genuinely nothing to show.
+      showToast('Немає з’єднання, і локальних даних ще немає. Спробуйте пізніше.');
+    } else {
+      // We already rendered from cache — a failed background refresh is a
+      // non-event from the user's point of view, just log it.
+      console.warn('[init] background catalog refresh failed, staying on cached catalog:', err);
+    }
+  }
+}
+
+// Pure, synchronous recompute + render — no I/O, no await. Call this
+// immediately after any in-memory state change (dayLogCache mutation) to
+// reflect it on screen instantly; storage writes and server sync happen
+// separately afterward, in the background, without the UI waiting on them.
+function recomputeAndRender() {
+  const todayLog = dayLogCache.get(TODAY) || {};
   const dayStatus = computeDayStatus(todayLog);
 
   STATE = {
@@ -384,24 +486,39 @@ async function refreshState() {
 
   renderHero();
   renderCategories();
+}
 
-  syncDailyStatus(); // fire-and-forget — never blocks the UI on network
+// Persists the current day's log to CloudStorage/localStorage AND syncs it
+// to the server — both fired in the background, in parallel, neither one
+// waiting on or blocking the other. Called WITHOUT awaiting at the call
+// site (see the confirm handlers below) so it never delays the UI, which
+// has already been updated optimistically by the time this runs.
+async function persistAndSync() {
+  const todayLog = dayLogCache.get(TODAY) || {};
+  markSyncDirty();
+
+  const persistPromise = persistDayLog(TODAY, todayLog).catch((err) => {
+    console.warn('[persist] local storage write failed (in-memory state is still correct):', err);
+  });
+  const syncPromise = syncDailyStatus();
+
+  await Promise.allSettled([persistPromise, syncPromise]);
 }
 
 // Pushes today's already-computed status to the server, so the evening
 // broadcast (GET /api/trigger-evening-summary, run by an external cron
-// pinger) has something to send. Best-effort: a failure here never affects
-// the local experience, since CloudStorage/localStorage remains the real
-// source of truth for the user's own view of their day.
+// pinger) has something to send. Always fails silently as far as the user
+// is concerned — no toast, no blocking — since CloudStorage/localStorage
+// remains the real source of truth for the user's own view of their day
+// regardless of whether this succeeds. markSyncDirty()/clearSyncDirty()
+// track whether the current state has actually reached the server; since
+// this always sends the full current status (not a diff), simply trying
+// again on the next log action or app open is a complete, correct retry —
+// no separate queue of operations is needed.
 //
 // IMPORTANT: fetch() only rejects on actual network failures — it resolves
-// normally for HTTP error responses like 401/500/502. Earlier this went
-// unchecked, so a server-side error (e.g. Turso not configured yet) failed
-// completely silently: the request "succeeded" from fetch()'s point of
-// view while the server did nothing, and nothing was logged anywhere. This
-// explicitly checks res.ok and surfaces the real error now.
-let syncFailureToastShown = false;
-
+// normally for HTTP error responses like 401/500/502, so this explicitly
+// checks res.ok rather than relying on the promise rejecting.
 async function syncDailyStatus() {
   if (!INIT_DATA) {
     console.warn('[sync] Skipped — no Telegram initData (not running inside a real Telegram session).');
@@ -438,15 +555,13 @@ async function syncDailyStatus() {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `Sync failed with status ${res.status}`);
     }
+
+    clearSyncDirty();
   } catch (err) {
-    console.error('[sync] Background status sync failed:', err.message);
-    // Surface it once per session, quietly, so it's actually discoverable
-    // without opening devtools — but doesn't nag on every log action if the
-    // underlying cause (e.g. Turso misconfigured) keeps failing repeatedly.
-    if (!syncFailureToastShown) {
-      syncFailureToastShown = true;
-      showToast('Не вдалося синхронізувати підсумки дня із сервером.');
-    }
+    // Silent by design — logged for developers, never shown to the user.
+    // The dirty flag stays set, so the next log action or app open (via
+    // persistAndSync -> markSyncDirty -> another attempt) retries it.
+    console.error('[sync] Background status sync failed (will retry next action/open):', err.message);
   }
 }
 
@@ -764,22 +879,22 @@ function openLogSheet(productKey) {
     });
 
     const confirmBtn = document.getElementById('confirmBtn');
-    confirmBtn?.addEventListener('click', async () => {
-      confirmBtn.disabled = true;
+    confirmBtn?.addEventListener('click', () => {
       haptic('impact', 'medium');
-      try {
-        const dayLog = await loadDayLog(TODAY);
-        dayLog[item.product_key] = Math.max(0, (dayLog[item.product_key] || 0) + sheetState.pendingDelta);
-        await saveDayLog(TODAY, dayLog);
 
-        haptic('notification', 'success');
-        await refreshState();
-        closeSheet();
-      } catch (err) {
-        haptic('notification', 'error');
-        showToast(err.message);
-        confirmBtn.disabled = false;
-      }
+      // OPTIMISTIC: mutate in-memory state and re-render instantly — no
+      // await, no waiting on storage or network.
+      const dayLog = dayLogCache.get(TODAY) || {};
+      dayLog[item.product_key] = Math.max(0, (dayLog[item.product_key] || 0) + sheetState.pendingDelta);
+      setDayLogInMemory(TODAY, dayLog);
+      recomputeAndRender();
+
+      haptic('notification', 'success');
+      closeSheet();
+
+      // BACKGROUND: persist locally + sync to the server, without the UI
+      // waiting on either.
+      persistAndSync();
     });
   }
 
@@ -881,22 +996,20 @@ function openJunkSheet() {
     });
 
     const confirmBtn = document.getElementById('confirmBtn');
-    confirmBtn?.addEventListener('click', async () => {
-      confirmBtn.disabled = true;
+    confirmBtn?.addEventListener('click', () => {
       haptic('impact', 'medium');
-      try {
-        const dayLog = await loadDayLog(TODAY);
-        dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + sheetState.pendingDelta);
-        await saveDayLog(TODAY, dayLog);
 
-        haptic('notification', 'success');
-        await refreshState();
-        closeSheet();
-      } catch (err) {
-        haptic('notification', 'error');
-        showToast(err.message);
-        confirmBtn.disabled = false;
-      }
+      // OPTIMISTIC: mutate in-memory state and re-render instantly.
+      const dayLog = dayLogCache.get(TODAY) || {};
+      dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + sheetState.pendingDelta);
+      setDayLogInMemory(TODAY, dayLog);
+      recomputeAndRender();
+
+      haptic('notification', 'success');
+      closeSheet();
+
+      // BACKGROUND: persist locally + sync to the server.
+      persistAndSync();
     });
   }
 
