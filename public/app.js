@@ -1328,12 +1328,40 @@ async function boot() {
   wireUpInviteForm();
 
   if (isAuthorizedCached()) {
+    // Fast path: this device has already proven authorized before — trust
+    // it immediately (offline-first), and re-verify quietly in the background.
     hideLockScreen();
     await init();
     checkAuthInBackground();
-  } else {
-    showLockScreen();
+    return;
   }
+
+  // No local cache — this does NOT mean "not authorized". It could just be
+  // a brand-new device (or cleared browser storage) for a Telegram account
+  // that's already authorized on another device. Since Telegram's user ID
+  // is the same everywhere, ask the server before assuming this person
+  // needs to enter an invite code again — this is the one deliberate
+  // exception to "never block the first render on network" (see
+  // requirement 1 elsewhere): authorization genuinely can't be known
+  // without asking, the first time on any given device.
+  if (INIT_DATA) {
+    try {
+      const res = await fetch('/api/check-auth', { headers: { 'X-Telegram-Init-Data': INIT_DATA } });
+      if (res.ok) {
+        const body = await res.json();
+        if (body.authorized) {
+          setAuthorizedCached();
+          hideLockScreen();
+          await init();
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[auth] initial check-auth failed, falling back to the lock screen:', err);
+    }
+  }
+
+  showLockScreen();
 }
 
 boot();
