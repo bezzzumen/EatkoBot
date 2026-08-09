@@ -34,6 +34,10 @@ const PORT = process.env.PORT || 3000;
 const WEBAPP_URL = process.env.WEBAPP_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Comma-separated numeric Telegram user IDs allowed to run /invite.
+const ADMIN_TELEGRAM_IDS = new Set(
+  (process.env.ADMIN_TELEGRAM_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
 
 // The diet's "day" always means a calendar day in Kyiv time, no matter what
 // timezone the server itself runs in.
@@ -312,12 +316,68 @@ app.get('/api/catalog', (req, res) => {
   res.json(CATALOG);
 });
 
+// Checked by the client on every app open (after trusting a cached "I'm
+// authorized" flag optimistically) to confirm access hasn't been revoked.
+// Also usable as the very first check for a brand-new device with no cache.
+app.get('/api/check-auth', async (req, res) => {
+  const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
+  if (!tgUser) {
+    return res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
+  }
+
+  if (!db.isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+  }
+
+  try {
+    const authorized = await db.isUserAllowed(tgUser.id);
+    res.json({ authorized });
+  } catch (err) {
+    console.error('[check-auth] failed:', err.message);
+    res.status(502).json({ error: 'Failed to check authorization' });
+  }
+});
+
+// The lock-screen submit action: validates an invite code and, on success,
+// adds the requesting (real, initData-verified) Telegram user to the
+// allowlist permanently.
+app.post('/api/verify-invite', async (req, res) => {
+  const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
+  if (!tgUser) {
+    return res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
+  }
+
+  if (!db.isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+  }
+
+  const { code } = req.body || {};
+
+  try {
+    const result = await db.verifyAndConsumeInviteCode(code, {
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+
+    if (!result.ok) {
+      return res.status(400).json({ authorized: false, error: result.reason });
+    }
+    res.json({ authorized: true });
+  } catch (err) {
+    console.error('[verify-invite] failed:', err.message);
+    res.status(502).json({ authorized: false, error: 'Не вдалося перевірити код. Спробуйте ще раз.' });
+  }
+});
+
 // Called by the client (public/app.js) after every log action, with the
 // day's status it already computed locally. Upserts one row per (user,
 // date) — this is the ONLY thing persisted server-side; the actual food
 // logs stay in the client's CloudStorage as before. Requires real Telegram
 // initData, both to know who's syncing and to stop an arbitrary caller from
-// writing fake data under someone else's account.
+// writing fake data under someone else's account — and now also requires
+// the user to actually be on the invite allowlist, so the lock screen is
+// enforced server-side too, not just cosmetically in the UI.
 app.post('/api/sync-status', async (req, res) => {
   const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
   if (!tgUser) {
@@ -331,6 +391,16 @@ app.post('/api/sync-status', async (req, res) => {
 
   if (!db.isDatabaseConfigured()) {
     return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+  }
+
+  try {
+    const allowed = await db.isUserAllowed(tgUser.id);
+    if (!allowed) {
+      return res.status(403).json({ error: 'Not authorized — an invite code is required' });
+    }
+  } catch (err) {
+    console.error('[sync-status] authorization check failed:', err.message);
+    return res.status(502).json({ error: 'Failed to check authorization' });
   }
 
   try {
@@ -421,6 +491,27 @@ bot.command('start', async (ctx) => {
 bot.command('help', (ctx) =>
   ctx.reply('Натисніть /start, щоб відкрити трекер. Все інше відбувається всередині застосунку.')
 );
+
+// Admin-only: generates a new one-time invite code. Not listed anywhere
+// public (no /help mention) — silently ignored for non-admins rather than
+// replying with a permission-denied message, so it doesn't advertise that
+// an invite system exists at all to anyone probing commands.
+bot.command('invite', async (ctx) => {
+  const callerId = String(ctx.from?.id || '');
+  if (!ADMIN_TELEGRAM_IDS.has(callerId)) return;
+
+  if (!db.isDatabaseConfigured()) {
+    return ctx.reply('⚠️ Базу даних не налаштовано (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN).');
+  }
+
+  try {
+    const code = await db.generateInviteCode();
+    await ctx.reply(`🔑 Новий код запрошення:\n\n<code>${code}</code>`, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('[invite] failed to generate code:', err.message);
+    await ctx.reply('⚠️ Не вдалося згенерувати код. Спробуйте ще раз.');
+  }
+});
 
 bot.catch((err) => {
   console.error('Bot error:', err);
