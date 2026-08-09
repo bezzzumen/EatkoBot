@@ -330,7 +330,11 @@ app.get('/api/check-auth', async (req, res) => {
   }
 
   try {
-    const authorized = await db.isUserAllowed(tgUser.id);
+    const authorized = await db.isUserAllowed({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
     res.json({ authorized });
   } catch (err) {
     console.error('[check-auth] failed:', err.message);
@@ -394,7 +398,11 @@ app.post('/api/sync-status', async (req, res) => {
   }
 
   try {
-    const allowed = await db.isUserAllowed(tgUser.id);
+    const allowed = await db.isUserAllowed({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
     if (!allowed) {
       return res.status(403).json({ error: 'Not authorized — an invite code is required' });
     }
