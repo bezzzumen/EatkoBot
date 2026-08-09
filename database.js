@@ -246,13 +246,39 @@ async function getAllStatusForDate(date) {
 // Invite-code / authorization system
 // ---------------------------------------------------------------------------
 
-async function isUserAllowed(telegramId) {
+// Authorized if EITHER: this telegram_id is already in allowed_users (the
+// normal case), OR it's recorded as having used a code in invite_codes but
+// somehow never made it into allowed_users (e.g. the server died between
+// the two writes in verifyAndConsumeInviteCode below — those aren't atomic).
+// The second case also self-heals by backfilling the missing allowed_users
+// row, so this only needs to run once per affected user.
+async function isUserAllowed({ telegram_id, first_name, username }) {
   if (!turso) return false;
-  const result = await turso.execute({
+  const tgId = String(telegram_id);
+
+  const allowed = await turso.execute({
     sql: 'SELECT 1 FROM allowed_users WHERE telegram_id = ?',
-    args: [String(telegramId)],
+    args: [tgId],
   });
-  return result.rows.length > 0;
+  if (allowed.rows.length) return true;
+
+  const usedCode = await turso.execute({
+    sql: 'SELECT 1 FROM invite_codes WHERE is_used = 1 AND used_by_telegram_id = ?',
+    args: [tgId],
+  });
+  if (usedCode.rows.length) {
+    await turso.execute({
+      sql: `
+        INSERT INTO allowed_users (telegram_id, first_name, username)
+        VALUES (?, ?, ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
+      `,
+      args: [tgId, first_name || null, username || null],
+    });
+    return true;
+  }
+
+  return false;
 }
 
 // Human-typeable code: 8 chars, uppercase letters + digits, excluding
@@ -288,6 +314,12 @@ async function generateInviteCode() {
 // Validates a code, and if valid: marks it used and adds the user to
 // allowed_users. Returns { ok: true } or { ok: false, reason } — reason is
 // safe to show directly to the user (no internal detail leaked).
+//
+// If the code is already marked used, but by THIS SAME telegram_id (e.g.
+// they're retrying after a previous attempt partially failed, or opening
+// on another device and re-entering an old code out of habit), this treats
+// it as a successful login rather than an error — matches how the "already
+// used" state should behave for the person who legitimately used it.
 async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, username }) {
   if (!turso) throw new Error('Database not configured');
 
@@ -295,18 +327,36 @@ async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, usern
   if (!normalized) return { ok: false, reason: 'Введіть код запрошення.' };
 
   const existing = await turso.execute({
-    sql: 'SELECT id, is_used FROM invite_codes WHERE code = ?',
+    sql: 'SELECT id, is_used, used_by_telegram_id FROM invite_codes WHERE code = ?',
     args: [normalized],
   });
 
   if (!existing.rows.length) {
     return { ok: false, reason: 'Невірний код запрошення.' };
   }
-  if (existing.rows[0].is_used) {
-    return { ok: false, reason: 'Цей код уже використано.' };
+
+  const row = existing.rows[0];
+
+  if (row.is_used) {
+    const usedByThisUser = row.used_by_telegram_id != null && String(row.used_by_telegram_id) === String(telegram_id);
+    if (!usedByThisUser) {
+      return { ok: false, reason: 'Цей код уже використано.' };
+    }
+    // Same person, re-submitting a code they already used — log them in
+    // (and make sure allowed_users actually has them, in case that half of
+    // the original write never completed).
+    await turso.execute({
+      sql: `
+        INSERT INTO allowed_users (telegram_id, first_name, username)
+        VALUES (?, ?, ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
+      `,
+      args: [String(telegram_id), first_name || null, username || null],
+    });
+    return { ok: true };
   }
 
-  const codeId = existing.rows[0].id;
+  const codeId = row.id;
 
   await turso.execute({
     sql: `UPDATE invite_codes SET is_used = 1, used_by_telegram_id = ?, used_at = datetime('now') WHERE id = ?`,
