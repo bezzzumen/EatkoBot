@@ -14,6 +14,7 @@
 // mismatch we hit deploying to Render earlier).
 // -----------------------------------------------------------------------------
 
+const crypto = require('crypto');
 const seedData = require('./seed-data');
 
 const CATEGORIES_META = [
@@ -97,7 +98,7 @@ const CATALOG = buildCatalog();
 // mismatch this project hit deploying to Render previously.
 // -----------------------------------------------------------------------------
 
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@tursodatabase/serverless/compat');
 
 const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
@@ -143,6 +144,30 @@ async function ensureSchema() {
       categories_json      TEXT NOT NULL,
       updated_at           TEXT DEFAULT (datetime('now')),
       UNIQUE(user_id, log_date)
+    )
+  `);
+
+  // The invite-code allowlist. Kept deliberately separate from `users`
+  // above (which just tracks "anyone who's ever synced data") — this is
+  // specifically "who is permitted to use the app at all".
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS allowed_users (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id    TEXT UNIQUE NOT NULL,
+      first_name     TEXT,
+      username       TEXT,
+      authorized_at  TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      code                TEXT UNIQUE NOT NULL,
+      is_used             INTEGER NOT NULL DEFAULT 0,
+      used_by_telegram_id TEXT,
+      created_at          TEXT DEFAULT (datetime('now')),
+      used_at             TEXT
     )
   `);
 }
@@ -217,6 +242,89 @@ async function getAllStatusForDate(date) {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Invite-code / authorization system
+// ---------------------------------------------------------------------------
+
+async function isUserAllowed(telegramId) {
+  if (!turso) return false;
+  const result = await turso.execute({
+    sql: 'SELECT 1 FROM allowed_users WHERE telegram_id = ?',
+    args: [String(telegramId)],
+  });
+  return result.rows.length > 0;
+}
+
+// Human-typeable code: 8 chars, uppercase letters + digits, excluding
+// visually ambiguous characters (0/O, 1/I/L).
+function generateCodeString() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) {
+    code += chars[crypto.randomInt(chars.length)];
+  }
+  return code;
+}
+
+// Creates a new unused invite code and persists it. Retries on the
+// astronomically unlikely chance of a collision with an existing code.
+async function generateInviteCode() {
+  if (!turso) throw new Error('Database not configured');
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateCodeString();
+    try {
+      await turso.execute({
+        sql: 'INSERT INTO invite_codes (code) VALUES (?)',
+        args: [code],
+      });
+      return code;
+    } catch (err) {
+      if (attempt === 4) throw err; // give up after a few collisions
+    }
+  }
+}
+
+// Validates a code, and if valid: marks it used and adds the user to
+// allowed_users. Returns { ok: true } or { ok: false, reason } — reason is
+// safe to show directly to the user (no internal detail leaked).
+async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, username }) {
+  if (!turso) throw new Error('Database not configured');
+
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized) return { ok: false, reason: 'Введіть код запрошення.' };
+
+  const existing = await turso.execute({
+    sql: 'SELECT id, is_used FROM invite_codes WHERE code = ?',
+    args: [normalized],
+  });
+
+  if (!existing.rows.length) {
+    return { ok: false, reason: 'Невірний код запрошення.' };
+  }
+  if (existing.rows[0].is_used) {
+    return { ok: false, reason: 'Цей код уже використано.' };
+  }
+
+  const codeId = existing.rows[0].id;
+
+  await turso.execute({
+    sql: `UPDATE invite_codes SET is_used = 1, used_by_telegram_id = ?, used_at = datetime('now') WHERE id = ?`,
+    args: [String(telegram_id), codeId],
+  });
+
+  await turso.execute({
+    sql: `
+      INSERT INTO allowed_users (telegram_id, first_name, username)
+      VALUES (?, ?, ?)
+      ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
+    `,
+    args: [String(telegram_id), first_name || null, username || null],
+  });
+
+  return { ok: true };
+}
+
 module.exports = {
   CATALOG,
   DAILY_CALORIE_TARGET,
@@ -228,4 +336,7 @@ module.exports = {
   getOrCreateUser,
   upsertDailyStatus,
   getAllStatusForDate,
+  isUserAllowed,
+  generateInviteCode,
+  verifyAndConsumeInviteCode,
 };
