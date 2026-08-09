@@ -752,6 +752,200 @@ function renderCategories() {
 }
 
 // ---------------------------------------------------------------------------
+// Analytics: weekly/monthly calorie chart + per-day macro breakdown.
+// Purely client-side, computed from the same dayLogCache preloaded for
+// streak/week (last HISTORY_LOOKBACK_DAYS days) — no extra network calls.
+// ---------------------------------------------------------------------------
+
+// Calories + macro totals for an arbitrary day's log (not just today's —
+// unlike computeDayStatus, this has no per-item/per-category breakdown,
+// just the four numbers the chart and day-detail panel need).
+//
+// NOTE: this rounds once at the end, whereas computeDayStatus rounds each
+// item's percentage first and sums the rounded values — so the two can
+// differ by a fraction of a calorie on the same data (confirmed via testing:
+// ~0.1 kcal on a real example). Genuinely imperceptible, not worth changing
+// computeDayStatus's already-shipped, already-tested logic over — flagging
+// it here rather than pretending the two are bit-for-bit identical.
+function computeDayMacros(dayLog) {
+  let calories = 0, protein = 0, carbs = 0, fat = 0;
+
+  for (const cat of CATALOG.categories) {
+    let categoryRatio = 0;
+    for (const item of cat.items) {
+      const loggedGrams = dayLog[item.product_key] || 0;
+      const ratio = item.max_grams ? loggedGrams / item.max_grams : 0;
+      categoryRatio += ratio;
+      protein += ratio * item.protein;
+      carbs += ratio * item.carbs;
+      fat += ratio * item.fat;
+    }
+    calories += cat.target_calories * categoryRatio;
+  }
+
+  calories += Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+
+  return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat) };
+}
+
+function getWeekRangeDates(todayDate) {
+  const monday = addDaysISO(todayDate, -dayOfWeekMonFirst(todayDate));
+  const dates = [];
+  for (let i = 0; i < 7; i++) dates.push(addDaysISO(monday, i));
+  return dates;
+}
+
+function getMonthRangeDates(todayDate) {
+  const [y, m] = todayDate.split('-').map(Number);
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate(); // day 0 of next month = last day of this month
+  const dates = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    dates.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  }
+  return dates;
+}
+
+function getDayChartInfo(date) {
+  if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0 };
+  const log = dayLogCache.get(date);
+  if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0 };
+  const macros = computeDayMacros(log);
+  return { date, isFuture: false, hasData: true, ...macros };
+}
+
+function formatFriendlyDate(date) {
+  return new Date(date + 'T00:00:00').toLocaleDateString('uk-UA', { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+let analyticsPeriod = 'week';
+let analyticsSelectedDate = null;
+
+function renderAnalytics() {
+  const dates = analyticsPeriod === 'week' ? getWeekRangeDates(TODAY) : getMonthRangeDates(TODAY);
+  const dayInfos = dates.map(getDayChartInfo);
+  const target = CATALOG.daily_calorie_target;
+
+  const maxActual = Math.max(0, ...dayInfos.map((d) => d.calories || 0));
+  const maxScale = Math.max(target * 1.25, maxActual * 1.1, 1);
+  const baselinePct = Math.min(100, (target / maxScale) * 100);
+
+  document.getElementById('analyticsSub').textContent =
+    analyticsPeriod === 'week' ? 'Пн–Нд поточного тижня' : `${dayInfos.length} днів цього місяця`;
+
+  const barsHtml = dayInfos.map((d, i) => {
+    const heightPct = d.isFuture ? 0 : Math.min(100, (d.calories / maxScale) * 100);
+    const barClass = d.isFuture ? 'future' : !d.hasData ? 'empty' : d.calories > target ? 'over' : 'success';
+    const isSelected = d.date === analyticsSelectedDate;
+    const label = analyticsPeriod === 'week' ? WEEKDAY_LABELS[i] : '';
+    return `
+      <div class="chart-bar-col ${isSelected ? 'selected' : ''}" data-date="${d.date}">
+        <div class="chart-bar-track"><div class="chart-bar-fill ${barClass}" style="height:${heightPct}%"></div></div>
+        ${label ? `<div class="chart-bar-label">${label}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  const chartEl = document.getElementById('analyticsChart');
+  chartEl.innerHTML = `
+    <div class="chart-area">
+      <div class="chart-baseline" style="bottom:${baselinePct}%"></div>
+      <div class="chart-bars">${barsHtml}</div>
+    </div>`;
+
+  chartEl.querySelectorAll('.chart-bar-col').forEach((col) => {
+    col.addEventListener('click', () => {
+      haptic('selection');
+      analyticsSelectedDate = col.dataset.date;
+      renderAnalytics(); // re-render so the .selected outline moves
+    });
+  });
+
+  renderAnalyticsDayDetail();
+}
+
+function renderAnalyticsDayDetail() {
+  const detailEl = document.getElementById('analyticsDayDetail');
+  if (!analyticsSelectedDate) {
+    detailEl.innerHTML = '<div class="empty-note" style="text-align:center;padding:18px 8px;">Торкніться стовпчика, щоб побачити деталі дня.</div>';
+    return;
+  }
+
+  const info = getDayChartInfo(analyticsSelectedDate);
+  const goals = { protein: CATALOG.protein_goal, carbs: CATALOG.carbs_goal, fat: CATALOG.fat_goal };
+  const target = CATALOG.daily_calorie_target;
+
+  if (info.isFuture) {
+    detailEl.innerHTML = `<div class="empty-note" style="text-align:center;padding:18px 8px;">${escapeHtml(formatFriendlyDate(analyticsSelectedDate))} ще не настав.</div>`;
+    return;
+  }
+  if (!info.hasData) {
+    detailEl.innerHTML = `
+      <div class="day-detail-card glass">
+        <div class="day-detail-date">${escapeHtml(formatFriendlyDate(analyticsSelectedDate))}</div>
+        <div class="empty-note" style="padding:0;">Цього дня нічого не залоговано.</div>
+      </div>`;
+    return;
+  }
+
+  const pct = target ? Math.round((info.calories / target) * 100) : 0;
+  const isOver = info.calories > target;
+
+  function macroRow(name, key, value, goal) {
+    const p = goal ? Math.max(0, Math.min(100, (value / goal) * 100)) : 0;
+    return `
+      <div class="macro">
+        <div class="macro-top"><span class="macro-name">${name}</span><span class="macro-val mono">${Math.round(value)}/${Math.round(goal)}г</span></div>
+        <div class="macro-track"><div class="macro-fill ${key}" style="width:${p}%"></div></div>
+      </div>`;
+  }
+
+  detailEl.innerHTML = `
+    <div class="day-detail-card glass">
+      <div class="day-detail-date">${escapeHtml(formatFriendlyDate(analyticsSelectedDate))}</div>
+      <div class="day-detail-kcal ${isOver ? 'over' : ''}">${Math.round(info.calories)} / ${Math.round(target)} ккал (${pct}%)</div>
+      <div class="macros-row">
+        ${macroRow('🍗 Білки', 'protein', info.protein, goals.protein)}
+        ${macroRow('🥑 Жири', 'fat', info.fat, goals.fat)}
+        ${macroRow('🌾 Вуглеводи', 'carbs', info.carbs, goals.carbs)}
+      </div>
+    </div>`;
+}
+
+const analyticsOverlay = document.getElementById('analyticsOverlay');
+
+function openAnalytics() {
+  analyticsPeriod = 'week';
+  analyticsSelectedDate = null; // no day pre-selected on open
+  document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.period === analyticsPeriod);
+  });
+  renderAnalytics();
+  analyticsOverlay.classList.add('show');
+}
+function closeAnalytics() {
+  analyticsOverlay.classList.remove('show');
+}
+
+document.getElementById('analyticsBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  openAnalytics();
+});
+document.getElementById('analyticsClose')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  closeAnalytics();
+});
+analyticsOverlay?.addEventListener('click', (e) => { if (e.target === analyticsOverlay) closeAnalytics(); });
+
+document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    haptic('impact', 'light');
+    analyticsPeriod = btn.dataset.period;
+    analyticsSelectedDate = null;
+    document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((b) => b.classList.toggle('active', b === btn));
+    renderAnalytics();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bottom sheet: log grams against a product
 // ---------------------------------------------------------------------------
 
@@ -1042,4 +1236,104 @@ function openJunkSheet() {
 
 // ---------------------------------------------------------------------------
 
-init();
+// ---------------------------------------------------------------------------
+// Invite-code authorization
+// ---------------------------------------------------------------------------
+// Gates the whole app behind an invite code. Once verified, "authorized" is
+// cached locally so every future app open skips straight to the normal
+// offline-first boot (consistent with requirement 1 — this check must not
+// force a network round-trip on every single open). A lightweight
+// background re-check still runs afterward in case access was revoked.
+
+const AUTH_CACHE_KEY = 'eatko_authorized';
+
+function isAuthorizedCached() {
+  try { return localStorage.getItem(AUTH_CACHE_KEY) === '1'; } catch { return false; }
+}
+function setAuthorizedCached() {
+  try { localStorage.setItem(AUTH_CACHE_KEY, '1'); } catch { /* non-fatal */ }
+}
+function clearAuthorizedCached() {
+  try { localStorage.removeItem(AUTH_CACHE_KEY); } catch { /* non-fatal */ }
+}
+
+function showLockScreen() {
+  document.getElementById('lockScreen')?.classList.remove('hidden');
+}
+function hideLockScreen() {
+  document.getElementById('lockScreen')?.classList.add('hidden');
+}
+
+function wireUpInviteForm() {
+  const input = document.getElementById('inviteCodeInput');
+  const btn = document.getElementById('inviteSubmitBtn');
+  const errorEl = document.getElementById('inviteError');
+  if (!input || !btn || !errorEl) return;
+
+  async function submit() {
+    const code = input.value.trim();
+    errorEl.textContent = '';
+
+    if (!code) { errorEl.textContent = 'Введіть код запрошення.'; return; }
+    if (!INIT_DATA) { errorEl.textContent = 'Відкрийте це через Telegram-бота.'; return; }
+
+    btn.disabled = true;
+    haptic('impact', 'medium');
+
+    try {
+      const res = await fetch('/api/verify-invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+        body: JSON.stringify({ code }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.authorized) {
+        throw new Error(body.error || 'Не вдалося перевірити код. Спробуйте ще раз.');
+      }
+
+      setAuthorizedCached();
+      haptic('notification', 'success');
+      hideLockScreen();
+      await init();
+    } catch (err) {
+      haptic('notification', 'error');
+      errorEl.textContent = err.message;
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+}
+
+// Non-blocking: confirms the cached "authorized" flag still holds, in case
+// access was revoked since the last check. A failed/unreachable check never
+// locks anyone out on its own — only an explicit authorized:false does.
+async function checkAuthInBackground() {
+  if (!INIT_DATA) return;
+  try {
+    const res = await fetch('/api/check-auth', { headers: { 'X-Telegram-Init-Data': INIT_DATA } });
+    if (!res.ok) return;
+    const body = await res.json();
+    if (!body.authorized) {
+      clearAuthorizedCached();
+      showLockScreen();
+    }
+  } catch (err) {
+    console.warn('[auth] background re-check failed (non-fatal):', err);
+  }
+}
+
+async function boot() {
+  wireUpInviteForm();
+
+  if (isAuthorizedCached()) {
+    hideLockScreen();
+    await init();
+    checkAuthInBackground();
+  } else {
+    showLockScreen();
+  }
+}
+
+boot();
