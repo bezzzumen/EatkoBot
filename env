@@ -20,3 +20,7 @@ GEMINI_MODEL=gemini-2.5-flash
 # equivalent from the web dashboard.
 TURSO_DATABASE_URL=libsql://eatkobot-bezzzumen.aws-eu-west-1.turso.io
 TURSO_AUTH_TOKEN=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODYwNDQzOTgsImlkIjoiMDE5ZmQ4ODgtNjkwMS03ZTFmLWE2NTEtNDNhODcyYTgwOTNjIiwia2lkIjoiS1RMVHI1UDhEQTlJZHlMSVcxSVAxdkl3UURkdXJDd1kzZUhxZ25ObU9GRSIsInJpZCI6ImYxYWRlZDY4LTAxYzAtNDE3MS04MzAzLTAwZmE5MGU1MGVkMyJ9.dHSyp-rv6WCA7dDXR2AakIvYLb6a1LftTGTc8321fN5xu8zZQRTRBaaKQ-nabhJQA4btuUeitKEVXA5Q0YTECA
+
+# Comma-separated numeric Telegram user IDs allowed to run /invite (get your
+# own ID by messaging @userinfobot). Leave empty and nobody can run it.
+ADMIN_TELEGRAM_IDS=your_telegram_id_here
