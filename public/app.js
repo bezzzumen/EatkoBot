@@ -26,6 +26,15 @@ if (tg) {
 // (e.g. desktop browser testing), in which case syncing is simply skipped.
 const INIT_DATA = tg?.initData || '';
 
+// Diagnostic-only, sent alongside INIT_DATA so the server can log "this
+// telegram_id was claimed but signature verification failed" instead of a
+// blind 401 — makes a real misconfiguration (e.g. mismatched BOT_TOKEN)
+// actually traceable. NEVER used by the server to grant access on its own —
+// initDataUnsafe is, as the name says, unverified, and anyone can fake it
+// with a plain fetch() call. INIT_DATA (the signed string above) remains
+// the only thing that actually proves who's asking.
+const CLIENT_TELEGRAM_ID = tg?.initDataUnsafe?.user?.id != null ? String(tg.initDataUnsafe.user.id) : '';
+
 function haptic(type, style) {
   const h = tg?.HapticFeedback;
   if (!h) return;
@@ -1284,7 +1293,7 @@ function wireUpInviteForm() {
       const res = await fetch('/api/verify-invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, telegram_id: CLIENT_TELEGRAM_ID }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.authorized) {
@@ -1312,7 +1321,9 @@ function wireUpInviteForm() {
 async function checkAuthInBackground() {
   if (!INIT_DATA) return;
   try {
-    const res = await fetch('/api/check-auth', { headers: { 'X-Telegram-Init-Data': INIT_DATA } });
+    const res = await fetch(`/api/check-auth?telegram_id=${encodeURIComponent(CLIENT_TELEGRAM_ID)}`, {
+      headers: { 'X-Telegram-Init-Data': INIT_DATA },
+    });
     if (!res.ok) return;
     const body = await res.json();
     if (!body.authorized) {
@@ -1346,7 +1357,9 @@ async function boot() {
   // without asking, the first time on any given device.
   if (INIT_DATA) {
     try {
-      const res = await fetch('/api/check-auth', { headers: { 'X-Telegram-Init-Data': INIT_DATA } });
+      const res = await fetch(`/api/check-auth?telegram_id=${encodeURIComponent(CLIENT_TELEGRAM_ID)}`, {
+        headers: { 'X-Telegram-Init-Data': INIT_DATA },
+      });
       if (res.ok) {
         const body = await res.json();
         if (body.authorized) {
