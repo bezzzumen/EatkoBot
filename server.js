@@ -70,13 +70,30 @@ if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
 // re-adding auth here specifically: we need to know the REAL Telegram user
 // making the request, both to send the message to the right chat and to
 // stop an arbitrary client from claiming to be a different user.
+//
+// IMPORTANT: this is deliberately the ONLY source of truth for who's
+// making a request. `initDataUnsafe.user.id` (as the name says) is NOT
+// signed — any client can set it to any value with a plain fetch() call,
+// no real Telegram session needed. Falling back to it when signature
+// verification fails would let anyone impersonate any telegram_id and get
+// authorized under someone else's identity. So this never does that — a
+// failed check always means "not authorized", never "trust the claim
+// instead". What it DOES do differently now is log exactly which step
+// failed, so a real misconfiguration (e.g. BOT_TOKEN not matching) is
+// actually diagnosable instead of a silent, unexplained 401 every time.
 
 function validateInitData(initData) {
-  if (!initData) return null;
+  if (!initData) {
+    console.warn('[auth] Rejected: no X-Telegram-Init-Data received at all.');
+    return null;
+  }
 
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
-  if (!hash) return null;
+  if (!hash) {
+    console.warn('[auth] Rejected: initData present but has no "hash" param.');
+    return null;
+  }
 
   params.delete('hash');
   const dataCheckString = [...params.entries()]
@@ -84,19 +101,42 @@ function validateInitData(initData) {
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
 
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+  // .trim() guards against the classic gotcha of a stray trailing
+  // space/newline in the .env value (or Render's env var UI) silently
+  // producing a different HMAC secret than the real bot token.
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN.trim()).digest();
   const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
-  if (computedHash !== hash) return null;
-
-  const userJson = params.get('user');
-  if (!userJson) return null;
-
-  try {
-    return JSON.parse(userJson); // { id, first_name, ... }
-  } catch {
+  if (computedHash !== hash) {
+    console.warn(
+      '[auth] Rejected: initData signature does not match. This almost always means BOT_TOKEN ' +
+      'in this environment does not exactly match the token this initData was actually signed ' +
+      'with — double check .env locally AND the BOT_TOKEN env var in Render\'s dashboard are both ' +
+      'the current token from @BotFather, with no extra whitespace.'
+    );
     return null;
   }
+
+  const userJson = params.get('user');
+  if (!userJson) {
+    console.warn('[auth] Rejected: initData signature is valid, but it has no "user" param.');
+    return null;
+  }
+
+  let user;
+  try {
+    user = JSON.parse(userJson); // { id, first_name, ... }
+  } catch (err) {
+    console.warn('[auth] Rejected: "user" param in initData is not valid JSON:', err.message);
+    return null;
+  }
+
+  if (user == null || user.id == null) {
+    console.warn('[auth] Rejected: parsed user object has no id:', userJson);
+    return null;
+  }
+
+  return user;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +362,11 @@ app.get('/api/catalog', (req, res) => {
 app.get('/api/check-auth', async (req, res) => {
   const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
   if (!tgUser) {
+    // req.query.telegram_id is whatever the client CLAIMS its id is —
+    // unverified, logged purely to help correlate "is this the same real
+    // user failing repeatedly" vs random/bot traffic. Never used to decide
+    // authorization; see the big comment on validateInitData for why.
+    console.warn('[check-auth] Rejected. Client-claimed (unverified) telegram_id:', req.query.telegram_id || '(none sent)');
     return res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
   }
 
@@ -348,6 +393,7 @@ app.get('/api/check-auth', async (req, res) => {
 app.post('/api/verify-invite', async (req, res) => {
   const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
   if (!tgUser) {
+    console.warn('[verify-invite] Rejected. Client-claimed (unverified) telegram_id:', req.body?.telegram_id || '(none sent)');
     return res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
   }
 
