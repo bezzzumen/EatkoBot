@@ -527,6 +527,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 const bot = new Bot(BOT_TOKEN);
 
 bot.command('start', async (ctx) => {
+  // Deep link: t.me/YourBot?start=invite behaves exactly like /invite.
+  if (ctx.match === 'invite') {
+    return handleInviteRequest(ctx);
+  }
+
   if (!WEBAPP_URL || WEBAPP_URL.includes('your-public-url-here')) {
     return ctx.reply(
       'Застосунок ще не повністю налаштований: у .env відсутній WEBAPP_URL.\n' +
@@ -546,26 +551,45 @@ bot.command('help', (ctx) =>
   ctx.reply('Натисніть /start, щоб відкрити трекер. Все інше відбувається всередині застосунку.')
 );
 
-// Admin-only: generates a new one-time invite code. Not listed anywhere
-// public (no /help mention) — silently ignored for non-admins rather than
-// replying with a permission-denied message, so it doesn't advertise that
-// an invite system exists at all to anyone probing commands.
-bot.command('invite', async (ctx) => {
+// Generates a new one-time invite code. Available to designated admins
+// (ADMIN_TELEGRAM_IDS — needed to bootstrap the very first users, since
+// nobody is in allowed_users yet at that point) AND to anyone already
+// authorized in the app itself (allowed_users, or having used a code
+// before) — so existing users can invite others without needing separate
+// admin rights. Handles both "/invite" and the "/start invite" deep link.
+async function handleInviteRequest(ctx) {
   const callerId = String(ctx.from?.id || '');
-  if (!ADMIN_TELEGRAM_IDS.has(callerId)) return;
-
-  if (!db.isDatabaseConfigured()) {
-    return ctx.reply('⚠️ Базу даних не налаштовано (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN).');
-  }
 
   try {
+    if (!db.isDatabaseConfigured()) {
+      return ctx.reply('⚠️ Базу даних не налаштовано (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN).');
+    }
+
+    const isAdmin = ADMIN_TELEGRAM_IDS.has(callerId);
+    const isAllowedUser = isAdmin
+      ? true
+      : await db.isUserAllowed({
+          telegram_id: callerId,
+          first_name: ctx.from?.first_name,
+          username: ctx.from?.username,
+        });
+
+    if (!isAdmin && !isAllowedUser) {
+      return ctx.reply('❌ У вас немає прав для генерації інвайт-кодів.');
+    }
+
     const code = await db.generateInviteCode();
-    await ctx.reply(`🔑 Новий код запрошення:\n\n<code>${code}</code>`, { parse_mode: 'HTML' });
+    await ctx.reply(
+      `🎟 <b>Новий інвайт-код створено:</b> <code>${code}</code>\n\nНадішліть його користувачеві для входу.`,
+      { parse_mode: 'HTML' }
+    );
   } catch (err) {
-    console.error('[invite] failed to generate code:', err.message);
-    await ctx.reply('⚠️ Не вдалося згенерувати код. Спробуйте ще раз.');
+    console.error('[invite] failed:', err.message);
+    await ctx.reply('⚠️ Сталася помилка під час генерації коду. Спробуйте ще раз пізніше.');
   }
-});
+}
+
+bot.command('invite', handleInviteRequest);
 
 bot.catch((err) => {
   console.error('Bot error:', err);
