@@ -599,12 +599,31 @@ bot.catch((err) => {
 // Boot
 // ---------------------------------------------------------------------------
 
+// Fixes "409 Conflict: terminated by other getUpdates request" during
+// Render zero-downtime redeploys: for a brief window, the old container and
+// the new one can both be polling at once. Telegram only allows one
+// long-poll connection per bot token, so the second one to connect gets
+// rejected with a 409. Clearing any pending getUpdates session (and
+// dropping whatever updates piled up while nothing was listening) before
+// starting a fresh poll avoids fighting over that single connection slot.
+async function stopBot() {
+  try {
+    await bot.stop();
+    console.log('Telegram bot stopped gracefully');
+  } catch (err) {
+    console.error('Error stopping bot:', err);
+  }
+}
+process.once('SIGINT', () => stopBot());
+process.once('SIGTERM', () => stopBot());
+
 db.ensureSchema()
-  .then(() => {
+  .then(async () => {
     app.listen(PORT, () => {
       console.log(`✅ Server listening on http://localhost:${PORT}`);
     });
 
+    await bot.api.deleteWebhook({ drop_pending_updates: true });
     bot.start();
     console.log('✅ Telegram bot is polling for updates');
   })
