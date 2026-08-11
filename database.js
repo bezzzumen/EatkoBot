@@ -20,7 +20,7 @@ const seedData = require('./seed-data');
 const CATEGORIES_META = [
   { key: 'garnish', name: 'Гарнір', emoji: '🌾', target_calories: 360 },
   { key: 'dairy', name: 'Молочні продукти', emoji: '🥛', target_calories: 260 },
-  { key: 'freebie', name: 'Будь-чого', emoji: '🍫', target_calories: 425 },
+  { key: 'freebie', name: '3) Будь-чого (~425 Ккал)', emoji: '🍫', target_calories: 425 },
   { key: 'protein', name: "М'ясо / Риба / Яйця", emoji: '🍗', target_calories: 400 },
   { key: 'veggies', name: 'Овочі та гриби', emoji: '🥦', target_calories: 120 },
   { key: 'fats', name: 'Жири та соуси', emoji: '🥑', target_calories: 220 },
@@ -281,15 +281,15 @@ async function isUserAllowed({ telegram_id, first_name, username }) {
   return false;
 }
 
-// Human-typeable code: 8 chars, uppercase letters + digits, excluding
-// visually ambiguous characters (0/O, 1/I/L).
+// Human-typeable code: "EATKO-" prefix + 4 random uppercase letters/digits,
+// excluding visually ambiguous characters (0/O, 1/I/L).
 function generateCodeString() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 8; i++) {
-    code += chars[crypto.randomInt(chars.length)];
+  let suffix = '';
+  for (let i = 0; i < 4; i++) {
+    suffix += chars[crypto.randomInt(chars.length)];
   }
-  return code;
+  return `EATKO-${suffix}`;
 }
 
 // Creates a new unused invite code and persists it. Retries on the
