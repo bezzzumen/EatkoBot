@@ -170,6 +170,23 @@ async function ensureSchema() {
       used_at             TEXT
     )
   `);
+
+  // Every evening-summary prediction/fortune line actually sent to a user,
+  // so repeat-avoidance can be genuinely per-user and survive server
+  // restarts — an in-memory-only, all-users-shared history (the previous
+  // approach) neither of those things.
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS sent_predictions (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL,
+      prediction  TEXT NOT NULL,
+      sent_at     TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  await turso.execute(`
+    CREATE INDEX IF NOT EXISTS idx_sent_predictions_user ON sent_predictions(user_id, kind, sent_at)
+  `);
 }
 
 async function getOrCreateUser({ telegram_id, first_name, username }) {
@@ -224,7 +241,7 @@ async function getAllStatusForDate(date) {
 
   const result = await turso.execute({
     sql: `
-      SELECT u.telegram_id, u.first_name, d.total_calories, d.daily_calorie_target, d.streak, d.categories_json
+      SELECT u.id AS user_id, u.telegram_id, u.first_name, d.total_calories, d.daily_calorie_target, d.streak, d.categories_json
       FROM daily_status d
       JOIN users u ON u.id = d.user_id
       WHERE d.log_date = ?
@@ -233,6 +250,7 @@ async function getAllStatusForDate(date) {
   });
 
   return result.rows.map((row) => ({
+    user_id: row.user_id,
     telegram_id: row.telegram_id,
     first_name: row.first_name,
     total_calories: row.total_calories,
@@ -375,6 +393,46 @@ async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, usern
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// Evening-summary prediction history (per-user, persistent anti-repeat)
+// ---------------------------------------------------------------------------
+
+// Every prediction text sent to this user, for this branch (success/over),
+// within the lookback window — used both to avoid re-sending a Gemini
+// result that matches something recent, and to filter the static fallback
+// pool down to lines this user hasn't seen lately.
+async function getRecentPredictions(userId, kind, lookbackDays) {
+  if (!turso) return [];
+  const result = await turso.execute({
+    sql: `
+      SELECT prediction FROM sent_predictions
+      WHERE user_id = ? AND kind = ? AND sent_at >= datetime('now', ?)
+    `,
+    args: [userId, kind, `-${lookbackDays} days`],
+  });
+  return result.rows.map((row) => row.prediction);
+}
+
+async function recordSentPrediction(userId, kind, prediction) {
+  if (!turso) return;
+  await turso.execute({
+    sql: 'INSERT INTO sent_predictions (user_id, kind, prediction) VALUES (?, ?, ?)',
+    args: [userId, kind, prediction],
+  });
+}
+
+// Called when the static fallback pool is fully exhausted for this user
+// (every line in it was sent within the lookback window) — clears their
+// history for this kind so old entries don't keep piling up pointlessly
+// once we're intentionally cycling back through the same finite pool.
+async function resetUserPredictionHistory(userId, kind) {
+  if (!turso) return;
+  await turso.execute({
+    sql: 'DELETE FROM sent_predictions WHERE user_id = ? AND kind = ?',
+    args: [userId, kind],
+  });
+}
+
 module.exports = {
   CATALOG,
   DAILY_CALORIE_TARGET,
@@ -389,4 +447,7 @@ module.exports = {
   isUserAllowed,
   generateInviteCode,
   verifyAndConsumeInviteCode,
+  getRecentPredictions,
+  recordSentPrediction,
+  resetUserPredictionHistory,
 };
