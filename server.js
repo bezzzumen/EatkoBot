@@ -34,10 +34,30 @@ const PORT = process.env.PORT || 3000;
 const WEBAPP_URL = process.env.WEBAPP_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-// Comma-separated numeric Telegram user IDs allowed to run /invite.
+// Comma-separated numeric Telegram user IDs allowed to run /invite. Strictly
+// validated: Telegram user IDs are always numeric, so anything else in this
+// list is almost certainly a typo — dropped, with a warning, rather than
+// silently kept around as a value that could never match anyway.
 const ADMIN_TELEGRAM_IDS = new Set(
-  (process.env.ADMIN_TELEGRAM_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
+  (process.env.ADMIN_TELEGRAM_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => {
+      if (!s) return false;
+      if (!/^\d+$/.test(s)) {
+        console.warn(`[!] ADMIN_TELEGRAM_IDS has a non-numeric entry, ignoring it: "${s}" (Telegram user IDs are always numeric).`);
+        return false;
+      }
+      return true;
+    })
 );
+
+if (ADMIN_TELEGRAM_IDS.size === 0) {
+  console.warn(
+    '\n[!] ADMIN_TELEGRAM_IDS is empty or unset — nobody will be able to run /invite. ' +
+    'Set it to your own numeric Telegram user ID (get it from @userinfobot) in .env / Render\u2019s environment variables.\n'
+  );
+}
 
 // The diet's "day" always means a calendar day in Kyiv time, no matter what
 // timezone the server itself runs in.
@@ -197,7 +217,13 @@ const OVER_SYSTEM_INSTRUCTION = `Ти пишеш коротку, затишну,
 // when Gemini keeps producing something we've already sent recently — see
 // getFortuneLine below). Each respects the same constraints as the Gemini
 // prompts: no food/calories/diet/exercise, no hustle-culture motivation.
-const FALLBACK_SUCCESS_LINES = [
+//
+// Object.freeze() + the length assertions below are a deliberate integrity
+// guard: these arrays must stay exactly as authored — the selection logic
+// silently degrades to a smaller effective pool if either one is ever
+// accidentally truncated or reassigned somewhere, which would be very easy
+// to miss just by reading behavior alone.
+const FALLBACK_SUCCESS_LINES = Object.freeze([
   'Іноді найважливіший крок за день — це просто дозволити речам іти своїм чередом.',
   'Незабаром ви отримаєте новину з боку, звідки найменше її чекаєте.',
   'Спокій — це не відсутність думок, а вміння не обирати кожну з них.',
@@ -208,8 +234,8 @@ const FALLBACK_SUCCESS_LINES = [
   'Іноді загублена річ сама знаходить дорогу назад — просто не зараз.',
   'Ваша інтуїція вже знає відповідь; питання лише в тому, чи ви їй довіряєте.',
   'Одна маленька зміна звички здатна непомітно змінити цілий тиждень.',
-];
-const FALLBACK_OVER_LINES = [
+]);
+const FALLBACK_OVER_LINES = Object.freeze([
   'Ідеальність нудна. Найкращі історії завжди відбуваються там, де щось пішло не за планом. Видихай і відпочивай.',
   'Не кожен день мусить бути ідеальним. Видихай і відпочивай.',
   'Навіть найрівніша дорога іноді петляє — і це нормально.',
@@ -218,26 +244,37 @@ const FALLBACK_OVER_LINES = [
   'Завтра почнеться саме собою, як завжди. Сьогодні можна просто видихнути.',
   'Найтепліші спогади рідко народжуються з ідеальних днів.',
   'Іноді найкращий план на вечір — це взагалі відсутність плану.',
-];
+]);
 
-// Remembers the last few lines actually sent, per branch, purely in-memory
-// (resets on restart — Render free tier especially). Used to avoid handing
-// out an exact repeat two nights running, both for Gemini output and for
-// fallback-pool picks.
-const RECENT_HISTORY_SIZE = 10;
-const recentLines = { success: [], over: [] };
-
-function rememberLine(kind, line) {
-  const arr = recentLines[kind];
-  arr.push(line);
-  if (arr.length > RECENT_HISTORY_SIZE) arr.shift();
+const EXPECTED_FALLBACK_COUNTS = { success: 10, over: 8 };
+if (
+  FALLBACK_SUCCESS_LINES.length !== EXPECTED_FALLBACK_COUNTS.success ||
+  FALLBACK_OVER_LINES.length !== EXPECTED_FALLBACK_COUNTS.over
+) {
+  console.error(
+    `[!] Fallback prediction pool size mismatch — expected ${EXPECTED_FALLBACK_COUNTS.success} success / ` +
+    `${EXPECTED_FALLBACK_COUNTS.over} over, got ${FALLBACK_SUCCESS_LINES.length} / ${FALLBACK_OVER_LINES.length}. ` +
+    'One of the arrays was edited without updating EXPECTED_FALLBACK_COUNTS to match — not fatal, but check it.'
+  );
 }
 
-function pickFreshFallback(kind) {
+// How far back (14-30 days, per spec) a prediction counts as "recently
+// sent" to a given user before it's eligible to be picked again.
+const PREDICTION_LOOKBACK_DAYS = 21;
+
+// Picks a random (Math.random(), true randomness — not a deterministic
+// index) fallback line the given user hasn't received in the lookback
+// window. If literally every line in the pool has been sent to them
+// recently, the pool is "exhausted": per spec, that resets their history
+// for this kind (handled by the caller) and this just picks fresh at
+// random from the full pool rather than refusing to answer.
+function pickFreshFallback(kind, recentTexts) {
   const pool = kind === 'success' ? FALLBACK_SUCCESS_LINES : FALLBACK_OVER_LINES;
-  const unused = pool.filter((line) => !recentLines[kind].includes(line));
-  const options = unused.length ? unused : pool; // if every line was used recently, allow a repeat rather than crash
-  return options[Math.floor(Math.random() * options.length)];
+  const unused = pool.filter((line) => !recentTexts.includes(line));
+  if (unused.length) {
+    return { text: unused[Math.floor(Math.random() * unused.length)], exhausted: false };
+  }
+  return { text: pool[Math.floor(Math.random() * pool.length)], exhausted: true };
 }
 
 async function callGemini(systemInstruction, userText) {
@@ -270,22 +307,32 @@ async function callGemini(systemInstruction, userText) {
   return text.trim().replace(/^["'«»]+|["'«»]+$/g, '').trim();
 }
 
-// Returns an emoji-prefixed line for the given day outcome. Every call
-// injects today's date plus a fresh random salt into the prompt (so the
-// model isn't repeatedly asked the exact same question — a big part of why
-// it was returning the same cached-feeling answer), and if Gemini's result
-// matches something already sent in the last RECENT_HISTORY_SIZE nights, it
-// retries with a new salt before giving up. This makes exact repeats highly
-// unlikely, though — being honest — nothing short of a hard-coded, endlessly
-// growing blocklist could make it a true mathematical guarantee against an
-// LLM; this is a strong best-effort, not a formal proof.
+// Returns an emoji-prefixed line for the given day outcome, personalized
+// per user via their own persistent prediction history (sent_predictions in
+// Turso) — not a single global "recently sent" list shared across everyone,
+// which would let one user's Gemini result block a completely different
+// user from getting that same (to THEM, novel) line. Every call injects
+// today's date plus a fresh random salt into the Gemini prompt (so the
+// model isn't repeatedly asked the exact same question), and if the result
+// matches something this specific user received within PREDICTION_LOOKBACK_DAYS,
+// it retries with a new salt before falling back to the static pool. This
+// makes exact repeats highly unlikely, though — being honest — nothing
+// short of an endlessly growing blocklist could make it a true mathematical
+// guarantee against an LLM; this is a strong best-effort, not a formal proof.
 const MAX_GENERATION_ATTEMPTS = 3;
 
-async function getFortuneLine(isSuccessful) {
+async function getFortuneLine(isSuccessful, userId) {
   const kind = isSuccessful ? 'success' : 'over';
   const emoji = isSuccessful ? '🥠' : '✨';
   const systemInstruction = isSuccessful ? SUCCESS_SYSTEM_INSTRUCTION : OVER_SYSTEM_INSTRUCTION;
   const date = todayISO();
+
+  let recentTexts = [];
+  try {
+    recentTexts = await db.getRecentPredictions(userId, kind, PREDICTION_LOOKBACK_DAYS);
+  } catch (err) {
+    console.warn('[predictions] failed to load recent history, proceeding without dedup:', err.message);
+  }
 
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
     try {
@@ -296,20 +343,36 @@ async function getFortuneLine(isSuccessful) {
 
       const text = await callGemini(systemInstruction, userText);
 
-      if (!recentLines[kind].includes(text)) {
-        rememberLine(kind, text);
+      if (!recentTexts.includes(text)) {
+        await recordPredictionSafely(userId, kind, text);
         return `${emoji} ${text}`;
       }
-      // Exact repeat of something sent recently — try again with a new salt.
+      // Exact repeat of something this user already received recently —
+      // try again with a new salt.
     } catch (err) {
       console.warn(`[gemini] attempt ${attempt} failed, falling back:`, err.message);
       break; // a hard API failure won't fix itself by retrying immediately
     }
   }
 
-  const fallback = pickFreshFallback(kind);
-  rememberLine(kind, fallback);
+  const { text: fallback, exhausted } = pickFreshFallback(kind, recentTexts);
+  if (exhausted) {
+    try {
+      await db.resetUserPredictionHistory(userId, kind);
+    } catch (err) {
+      console.warn('[predictions] failed to reset exhausted history (non-fatal):', err.message);
+    }
+  }
+  await recordPredictionSafely(userId, kind, fallback);
   return `${emoji} ${fallback}`;
+}
+
+async function recordPredictionSafely(userId, kind, text) {
+  try {
+    await db.recordSentPrediction(userId, kind, text);
+  } catch (err) {
+    console.warn('[predictions] failed to record sent prediction (non-fatal):', err.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -497,7 +560,7 @@ app.get('/api/trigger-evening-summary', async (req, res) => {
   for (const u of users) {
     try {
       const isSuccessful = u.total_calories <= u.daily_calorie_target;
-      const fortuneLine = await getFortuneLine(isSuccessful); // unique per user, based on THEIR actual day
+      const fortuneLine = await getFortuneLine(isSuccessful, u.user_id); // genuinely unique per user now — see getFortuneLine
       const message = buildSummaryMessage({
         total_calories: u.total_calories,
         daily_calorie_target: u.daily_calorie_target,
@@ -551,31 +614,21 @@ bot.command('help', (ctx) =>
   ctx.reply('Натисніть /start, щоб відкрити трекер. Все інше відбувається всередині застосунку.')
 );
 
-// Generates a new one-time invite code. Available to designated admins
-// (ADMIN_TELEGRAM_IDS — needed to bootstrap the very first users, since
-// nobody is in allowed_users yet at that point) AND to anyone already
-// authorized in the app itself (allowed_users, or having used a code
-// before) — so existing users can invite others without needing separate
-// admin rights. Handles both "/invite" and the "/start invite" deep link.
+// Generates a new one-time invite code. Admin-only — ADMIN_TELEGRAM_IDS is
+// the sole source of truth here. Deliberately NOT extended to general
+// allowed_users/invite_codes-verified users: code generation stays under
+// the bot owner's control rather than becoming a viral/referral mechanism.
+// Handles both "/invite" and the "/start invite" deep link.
 async function handleInviteRequest(ctx) {
   const callerId = String(ctx.from?.id || '');
 
   try {
-    if (!db.isDatabaseConfigured()) {
-      return ctx.reply('⚠️ Базу даних не налаштовано (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN).');
+    if (!ADMIN_TELEGRAM_IDS.has(callerId)) {
+      return ctx.reply('❌ Створення інвайт-кодів доступне лише адміністратору бота.');
     }
 
-    const isAdmin = ADMIN_TELEGRAM_IDS.has(callerId);
-    const isAllowedUser = isAdmin
-      ? true
-      : await db.isUserAllowed({
-          telegram_id: callerId,
-          first_name: ctx.from?.first_name,
-          username: ctx.from?.username,
-        });
-
-    if (!isAdmin && !isAllowedUser) {
-      return ctx.reply('❌ У вас немає прав для генерації інвайт-кодів.');
+    if (!db.isDatabaseConfigured()) {
+      return ctx.reply('⚠️ Базу даних не налаштовано (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN).');
     }
 
     const code = await db.generateInviteCode();
