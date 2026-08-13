@@ -396,8 +396,14 @@ function buildSummaryMessage({ total_calories, daily_calorie_target, streak, cat
 
   for (const c of categories) {
     const icon = CATEGORY_STATUS_ICON[c.status] || '🔸';
+    const label = `${icon} ${escapeHtml(c.emoji || '')} <b>${escapeHtml(c.category_name || '')}</b>`;
+    // Categories with no target_calories (e.g. "Погане їдло" — a direct
+    // kcal entry, uncapped by design) have no meaningful usage percent, so
+    // just show the kcal figure instead of a "X% (Y ккал)" pair.
     lines.push(
-      `${icon} ${escapeHtml(c.emoji || '')} <b>${escapeHtml(c.category_name || '')}</b> — ${Math.round(c.usage_percent ?? 0)}% (${Math.round(c.calories_consumed ?? 0)} ккал)`
+      c.target_calories
+        ? `${label} — ${Math.round(c.usage_percent ?? 0)}% (${Math.round(c.calories_consumed ?? 0)} ккал)`
+        : `${label} — ${Math.round(c.calories_consumed ?? 0)} ккал`
     );
   }
 
@@ -415,7 +421,7 @@ app.use(express.json());
 
 // --- API routes (registered before static file serving) ---
 
-// Static, read-only reference data: the 8 categories, their items, and the
+// Static, read-only reference data: the categories, their items, and the
 // calorie/macro goals. No user data flows through this one, so no auth.
 app.get('/api/catalog', (req, res) => {
   res.json(CATALOG);
