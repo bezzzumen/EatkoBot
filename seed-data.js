@@ -5,9 +5,15 @@
 // database.js) — ONLY if the table is empty, so editing this later and
 // restarting won't overwrite data you already have.
 //
-// Each product belongs to one of the 8 fixed categories (see CATEGORIES in
+// Each product belongs to one of the fixed categories (see CATEGORIES_META in
 // database.js — category_key here must match one of: garnish, dairy,
-// freebie, protein, veggies, fats, fruits, nuts).
+// freebie, protein, veggies, fats, fruits, nuts, junk_food).
+//
+// junk_food ("Погане їдло") deliberately has NO items below — it's logged
+// through a direct kcal-entry sheet in app.js (JUNK_KEY), not through
+// max_grams products, so there's nothing product-shaped to seed here. It's
+// still declared in CATEGORIES_META so its calories flow through the normal
+// category pipeline (sync payload, Turso, evening report).
 //
 // Fields:
 //   category_key   one of the 8 fixed keys above
