@@ -6,7 +6,7 @@
 // now happens entirely client-side via Telegram WebApp CloudStorage (with a
 // localStorage fallback), see public/app.js.
 //
-// The only thing left on the server is the static product catalog — the 8
+// The only thing left on the server is the static product catalog — the
 // categories and their items, straight from seed-data.js — which is safe to
 // rebuild fresh in memory on every boot since it's read-only reference data,
 // not user data. No database at all anymore, so better-sqlite3 is gone too
@@ -26,6 +26,14 @@ const CATEGORIES_META = [
   { key: 'fats', name: 'Жири та соуси', emoji: '🥑', target_calories: 220 },
   { key: 'fruits', name: 'Фрукти та ягоди', emoji: '🍎', target_calories: 290 },
   { key: 'nuts', name: 'Горіхи та насіння', emoji: '🌰', target_calories: 145 },
+  // "Погане їдло" — logged via a direct kcal-entry sheet in app.js (JUNK_KEY),
+  // not via max_grams catalog items, and deliberately uncapped, so it gets
+  // no seed-data.js items and target_calories stays 0 (it doesn't add to
+  // DAILY_CALORIE_TARGET below or factor into the usual over/complete status
+  // math). It's still a real CATEGORIES_META entry so its calories flow
+  // through the normal category pipeline into the client's synced summary,
+  // the Turso daily_status row, and the evening Telegram report.
+  { key: 'junk_food', name: 'Погане їдло', emoji: '🍔', target_calories: 0 },
 ];
 const CATEGORY_KEYS = new Set(CATEGORIES_META.map((c) => c.key));
 
