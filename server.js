@@ -345,6 +345,7 @@ async function getFortuneLine(isSuccessful, userId) {
 
       if (!recentTexts.includes(text)) {
         await recordPredictionSafely(userId, kind, text);
+        console.log(`[predictions] user ${userId} kind=${kind} source=gemini attempt=${attempt} text="${text}"`);
         return `${emoji} ${text}`;
       }
       // Exact repeat of something this user already received recently —
@@ -364,6 +365,7 @@ async function getFortuneLine(isSuccessful, userId) {
     }
   }
   await recordPredictionSafely(userId, kind, fallback);
+  console.log(`[predictions] user ${userId} kind=${kind} source=fallback exhausted=${exhausted} recentCount=${recentTexts.length} text="${fallback}"`);
   return `${emoji} ${fallback}`;
 }
 
@@ -561,6 +563,7 @@ app.get('/api/trigger-evening-summary', async (req, res) => {
     try {
       const isSuccessful = u.total_calories <= u.daily_calorie_target;
       const fortuneLine = await getFortuneLine(isSuccessful, u.user_id); // genuinely unique per user now — see getFortuneLine
+      console.log(`[trigger-evening-summary] user ${u.telegram_id} (kind=${isSuccessful ? 'success' : 'over'}) got prediction: "${fortuneLine}"`);
       const message = buildSummaryMessage({
         total_calories: u.total_calories,
         daily_calorie_target: u.daily_calorie_target,
