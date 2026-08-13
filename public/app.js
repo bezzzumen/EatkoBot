@@ -262,6 +262,12 @@ let STATE = null;
 // start with double underscores.
 const JUNK_KEY = '__junk_kcal';
 
+// The CATEGORIES_META key (database.js) that "Погане ЇДЛО" is registered
+// under. Its calories come from JUNK_KEY above, not from catalog items, so
+// it's excluded from the normal item-based target/usage math and from the
+// expandable category-card list (see computeDayStatus and renderCategories).
+const JUNK_CATEGORY_KEY = 'junk_food';
+
 function totalCaloriesForDay(dayLog) {
   if (!dayLog) return null;
   const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
@@ -321,6 +327,10 @@ function computeWeek(todayDate) {
 function computeDayStatus(dayLog) {
   let totalCalories = 0, totalProtein = 0, totalCarbs = 0, totalFat = 0;
 
+  // "Погане ЇДЛО" — direct kcal entry (JUNK_KEY), not a max_grams product.
+  // Computed up front so the junk_food category entry below can use it.
+  const junkKcal = round1(Math.max(0, Number(dayLog[JUNK_KEY]) || 0));
+
   const categories = CATALOG.categories.map((catMeta) => {
     const items = catMeta.items.map((p) => {
       const loggedGrams = dayLog[p.product_key] || 0;
@@ -339,7 +349,10 @@ function computeDayStatus(dayLog) {
     });
 
     const usageRatio = items.reduce((sum, it) => sum + it.percent / 100, 0);
-    const caloriesConsumed = catMeta.target_calories * usageRatio;
+    // junk_food has no catalog items (see seed-data.js) — its calories come
+    // straight from the junk-kcal sheet instead of target_calories*usage.
+    // Its macros stay 0 (items is empty, same as before this was a category).
+    const caloriesConsumed = catMeta.key === JUNK_CATEGORY_KEY ? junkKcal : catMeta.target_calories * usageRatio;
     const proteinConsumed = items.reduce((sum, it) => sum + it.protein, 0);
     const carbsConsumed = items.reduce((sum, it) => sum + it.carbs, 0);
     const fatConsumed = items.reduce((sum, it) => sum + it.fat, 0);
@@ -349,6 +362,8 @@ function computeDayStatus(dayLog) {
     totalCarbs += carbsConsumed;
     totalFat += fatConsumed;
 
+    // junk_food is uncapped by design, so usageRatio (always 0 — no items)
+    // never pushes it to 'complete'/'over'; it just stays 'active'.
     let status = 'active';
     if (usageRatio >= 1.005) status = 'over';
     else if (usageRatio >= 0.995) status = 'complete';
@@ -367,12 +382,6 @@ function computeDayStatus(dayLog) {
       items,
     };
   });
-
-  // "Погане ЇДЛО" — direct kcal entry, added straight to the daily total.
-  // Deliberately NOT folded into any category's own calories/usage, and NOT
-  // added to macro totals (no macro breakdown exists for arbitrary junk food).
-  const junkKcal = round1(Math.max(0, Number(dayLog[JUNK_KEY]) || 0));
-  totalCalories += junkKcal;
 
   return {
     total_calories: round1(totalCalories),
@@ -667,6 +676,11 @@ function renderCategories() {
   const container = document.getElementById('categoriesContainer');
 
   const categoryCardsHtml = STATE.categories
+    // junk_food is registered in CATEGORIES_META so its calories sync/report
+    // correctly (see computeDayStatus), but it has no catalog items and
+    // keeps its own dedicated quick-entry card below instead of an
+    // expandable one here.
+    .filter((cat) => cat.category_key !== JUNK_CATEGORY_KEY)
     .map((cat) => {
       const isOpen = openCategories.has(cat.category_key);
       const pillClass = cat.status;
