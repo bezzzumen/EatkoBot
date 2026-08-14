@@ -812,9 +812,10 @@ function computeDayMacros(dayLog) {
     calories += cat.target_calories * categoryRatio;
   }
 
-  calories += Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+  const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+  calories += junkKcal;
 
-  return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat) };
+  return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat), junk: round1(junkKcal) };
 }
 
 function getWeekRangeDates(todayDate) {
@@ -835,9 +836,9 @@ function getMonthRangeDates(todayDate) {
 }
 
 function getDayChartInfo(date) {
-  if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0 };
+  if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
   const log = dayLogCache.get(date);
-  if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0 };
+  if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
   const macros = computeDayMacros(log);
   return { date, isFuture: false, hasData: true, ...macros };
 }
@@ -861,14 +862,24 @@ function renderAnalytics() {
   document.getElementById('analyticsSub').textContent =
     analyticsPeriod === 'week' ? 'Пн–Нд поточного тижня' : `${dayInfos.length} днів цього місяця`;
 
+  // Per-bar calorie values are only rendered in week mode — with ~31 narrow
+  // columns in month mode there isn't room for readable labels, so month
+  // relies on tap-to-select (renderAnalyticsDayDetail) for exact numbers.
+  const showValues = analyticsPeriod === 'week';
+
   const barsHtml = dayInfos.map((d, i) => {
     const heightPct = d.isFuture ? 0 : Math.min(100, (d.calories / maxScale) * 100);
     const barClass = d.isFuture ? 'future' : !d.hasData ? 'empty' : d.calories > target ? 'over' : 'success';
     const isSelected = d.date === analyticsSelectedDate;
     const label = analyticsPeriod === 'week' ? WEEKDAY_LABELS[i] : '';
+    const valueLabel = (showValues && !d.isFuture && d.hasData)
+      ? `<div class="chart-bar-value" style="bottom:${heightPct}%">${Math.round(d.calories)}</div>` : '';
     return `
       <div class="chart-bar-col ${isSelected ? 'selected' : ''}" data-date="${d.date}">
-        <div class="chart-bar-track"><div class="chart-bar-fill ${barClass}" style="height:${heightPct}%"></div></div>
+        <div class="chart-bar-track">
+          ${valueLabel}
+          <div class="chart-bar-fill ${barClass}" style="height:${heightPct}%"></div>
+        </div>
         ${label ? `<div class="chart-bar-label">${label}</div>` : ''}
       </div>`;
   }).join('');
@@ -876,8 +887,10 @@ function renderAnalytics() {
   const chartEl = document.getElementById('analyticsChart');
   chartEl.innerHTML = `
     <div class="chart-area">
-      <div class="chart-baseline" style="bottom:${baselinePct}%"></div>
-      <div class="chart-bars">${barsHtml}</div>
+      <div class="chart-baseline" style="bottom:${baselinePct}%">
+        <span class="chart-baseline-label">Ціль · ${Math.round(target)} ккал</span>
+      </div>
+      <div class="chart-bars ${analyticsPeriod === 'month' ? 'is-month' : ''}">${barsHtml}</div>
     </div>`;
 
   chartEl.querySelectorAll('.chart-bar-col').forEach((col) => {
@@ -888,7 +901,66 @@ function renderAnalytics() {
     });
   });
 
+  renderAnalyticsSummary(dayInfos, target);
   renderAnalyticsDayDetail();
+  positionPeriodToggleThumb();
+}
+
+// Formats a calorie count with a thousands separator for the summary cards
+// (e.g. 1980 -> "1,980"), purely cosmetic — never fed back into logic.
+function fmtKcal(n) {
+  return Math.round(n).toLocaleString('en-US');
+}
+
+// Sleek 3-up "quick insight" row under the chart: average kcal/day, how many
+// logged days stayed within target, and what share of period calories came
+// from "Погане ЇДЛО". All derived client-side from the same dayInfos the
+// chart already computed — no extra data fetch.
+function renderAnalyticsSummary(dayInfos, target) {
+  const summaryEl = document.getElementById('analyticsSummary');
+  const loggedDays = dayInfos.filter((d) => d.hasData);
+
+  if (!loggedDays.length) {
+    summaryEl.innerHTML = '';
+    return;
+  }
+
+  const totalCalories = loggedDays.reduce((sum, d) => sum + d.calories, 0);
+  const totalJunk = loggedDays.reduce((sum, d) => sum + (d.junk || 0), 0);
+  const avgPerDay = totalCalories / loggedDays.length;
+  const daysInNorm = loggedDays.filter((d) => d.calories <= target).length;
+  const junkPct = totalCalories > 0 ? Math.round((totalJunk / totalCalories) * 100) : 0;
+
+  const normClass = loggedDays.length && daysInNorm / loggedDays.length >= 0.7 ? 'good' : '';
+  const junkClass = junkPct > 15 ? 'warn' : '';
+
+  summaryEl.innerHTML = `
+    <div class="analytics-summary">
+      <div class="summary-card">
+        <div class="summary-value mono">${fmtKcal(avgPerDay)}</div>
+        <div class="summary-label">Середнє / день</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-value mono ${normClass}">${daysInNorm}/${loggedDays.length}</div>
+        <div class="summary-label">Днів у нормі</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-value mono ${junkClass}">${junkPct}%</div>
+        <div class="summary-label">Погане їдло</div>
+      </div>
+    </div>`;
+}
+
+// Slides the segmented-control thumb under the active button. Reads real
+// layout (offsetLeft/offsetWidth) rather than hardcoding 50%, so it stays
+// correct if the button copy or container width ever changes.
+function positionPeriodToggleThumb() {
+  const toggle = document.getElementById('analyticsPeriodToggle');
+  const thumb = document.getElementById('periodToggleThumb');
+  const activeBtn = toggle?.querySelector('[data-period].active');
+  if (!toggle || !thumb || !activeBtn) return;
+  thumb.style.width = `${activeBtn.offsetWidth}px`;
+  thumb.style.transform = `translateX(${activeBtn.offsetLeft - 4}px)`;
 }
 
 function renderAnalyticsDayDetail() {
@@ -963,6 +1035,7 @@ document.getElementById('analyticsClose')?.addEventListener('click', () => {
   closeAnalytics();
 });
 analyticsOverlay?.addEventListener('click', (e) => { if (e.target === analyticsOverlay) closeAnalytics(); });
+window.addEventListener('resize', () => { if (analyticsOverlay?.classList.contains('show')) positionPeriodToggleThumb(); });
 
 document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((btn) => {
   btn.addEventListener('click', () => {
