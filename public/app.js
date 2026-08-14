@@ -685,6 +685,12 @@ function renderCategories() {
       const isOpen = openCategories.has(cat.category_key);
       const pillClass = cat.status;
       const pillLabel = cat.status === 'over' ? `⚠️ Перевищено (${Math.round(cat.usage_percent)}%)` : STATUS_LABEL[cat.status];
+      // Active categories get a minimal "+" affordance instead of a heavy
+      // text pill; complete/over states keep the pill since they carry
+      // meaningful status info (checkmark / overage %).
+      const statusMarkup = cat.status === 'active'
+        ? `<div class="status-icon" aria-hidden="true">+</div>`
+        : `<div class="status-pill ${pillClass}">${pillLabel}</div>`;
       const barPct = Math.min(100, cat.usage_percent);
       const barClass = cat.status === 'over' ? 'over' : cat.status === 'complete' ? 'complete' : '';
 
@@ -713,7 +719,7 @@ function renderCategories() {
               </div>
             </div>
             <div class="right">
-              <div class="status-pill ${pillClass}">${pillLabel}</div>
+              ${statusMarkup}
               <div class="chevron">▾</div>
             </div>
           </div>
