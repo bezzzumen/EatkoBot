@@ -667,11 +667,18 @@ function renderWeek() {
   const row = document.getElementById('weekRow');
 
   row.innerHTML = week
-    .map((day) => `
-      <div class="week-day status-${day.status} ${day.is_today ? 'is-today' : ''}">
+    .map((day, i) => {
+      // A day "chains" into the next one when both are logged streak
+      // successes — drives the neon connector bar in CSS that visually
+      // links consecutive days into one continuous streak strip.
+      const next = week[i + 1];
+      const chainNext = day.status === 'success' && next && next.status === 'success';
+      return `
+      <div class="week-day status-${day.status} ${day.is_today ? 'is-today' : ''} ${chainNext ? 'chain-next' : ''}">
         <div class="week-label">${escapeHtml(day.label)}</div>
         <div class="week-chip">${WEEK_STATUS_EMOJI[day.status] || '⚪'}</div>
-      </div>`)
+      </div>`;
+    })
     .join('');
 }
 
