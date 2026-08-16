@@ -238,6 +238,16 @@ function addDaysISO(dateStr, delta) {
   return dt.toISOString().slice(0, 10);
 }
 
+// Returns the 1st of the month `delta` months away from dateStr's month.
+// Anchoring to day 1 sidesteps day-overflow issues (e.g. Jan 31 + 1 month)
+// and is all getMonthRangeDates() actually needs — it only reads the
+// year/month off whatever anchor date it's given.
+function addMonthsISO(dateStr, delta) {
+  const [y, m] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return dt.toISOString().slice(0, 10);
+}
+
 function dayOfWeekMonFirst(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const jsDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = Sunday
@@ -818,6 +828,26 @@ function computeDayMacros(dayLog) {
   return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat), junk: round1(junkKcal) };
 }
 
+// Per-category calories for an arbitrary day's log — same ratio math as
+// computeDayMacros, just keyed by category instead of summed into one
+// total. Powers the "top calorie sources" breakdown. "Погане ЇДЛО" comes
+// from JUNK_KEY directly (mirrors computeDayStatus's own handling) rather
+// than its target_calories, which is deliberately 0.
+function computeDayCategoryCalories(dayLog) {
+  const byCategory = {};
+  for (const cat of CATALOG.categories) {
+    if (cat.key === JUNK_CATEGORY_KEY) continue;
+    let categoryRatio = 0;
+    for (const item of cat.items) {
+      const loggedGrams = dayLog[item.product_key] || 0;
+      categoryRatio += item.max_grams ? loggedGrams / item.max_grams : 0;
+    }
+    byCategory[cat.key] = cat.target_calories * categoryRatio;
+  }
+  byCategory[JUNK_CATEGORY_KEY] = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+  return byCategory;
+}
+
 function getWeekRangeDates(todayDate) {
   const monday = addDaysISO(todayDate, -dayOfWeekMonFirst(todayDate));
   const dates = [];
@@ -835,32 +865,69 @@ function getMonthRangeDates(todayDate) {
   return dates;
 }
 
+// The first date of the week/month period that `anchorDate` falls in —
+// used to compare periods (e.g. "is the anchor's period already the
+// current one") without generating the full date list.
+function getPeriodStart(period, anchorDate) {
+  return period === 'week'
+    ? addDaysISO(anchorDate, -dayOfWeekMonFirst(anchorDate))
+    : `${anchorDate.slice(0, 7)}-01`;
+}
+
+function shiftAnchor(period, anchorDate, direction) {
+  return period === 'week' ? addDaysISO(anchorDate, direction * 7) : addMonthsISO(anchorDate, direction);
+}
+
 function getDayChartInfo(date) {
   if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
   const log = dayLogCache.get(date);
   if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
   const macros = computeDayMacros(log);
-  return { date, isFuture: false, hasData: true, ...macros };
+  return { date, isFuture: false, hasData: true, categories: computeDayCategoryCalories(log), ...macros };
 }
 
 function formatFriendlyDate(date) {
   return new Date(date + 'T00:00:00').toLocaleDateString('uk-UA', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+// Compact "Ср, 12 серп" form for the discipline card — formatFriendlyDate's
+// full weekday+month is too long for a 2-up metric card.
+function formatShortDate(date) {
+  const s = new Date(date + 'T00:00:00').toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'short' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// "10 серпня – 16 серпня" for a week, "Серпень 2026" for a month — built
+// straight from the already-resolved date list, so it always matches
+// exactly what the chart is showing.
+function formatPeriodNavLabel(period, dates) {
+  if (period === 'month') {
+    const label = new Date(dates[0] + 'T00:00:00').toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' });
+    return capitalize(label);
+  }
+  const fmt = (d) => new Date(d + 'T00:00:00').toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
+  return `${capitalize(fmt(dates[0]))} – ${fmt(dates[dates.length - 1])}`;
+}
+
 let analyticsPeriod = 'week';
 let analyticsSelectedDate = null;
+// Any date inside the currently displayed week/month — getPeriodStart()
+// derives the actual period boundaries from it. Defaults to TODAY (the
+// current period) and moves in whole weeks/months via the nav arrows.
+let analyticsAnchorDate = TODAY;
 
 function renderAnalytics() {
-  const dates = analyticsPeriod === 'week' ? getWeekRangeDates(TODAY) : getMonthRangeDates(TODAY);
+  const dates = analyticsPeriod === 'week' ? getWeekRangeDates(analyticsAnchorDate) : getMonthRangeDates(analyticsAnchorDate);
   const dayInfos = dates.map(getDayChartInfo);
   const target = CATALOG.daily_calorie_target;
 
   const maxActual = Math.max(0, ...dayInfos.map((d) => d.calories || 0));
   const maxScale = Math.max(target * 1.25, maxActual * 1.1, 1);
   const baselinePct = Math.min(100, (target / maxScale) * 100);
-
-  document.getElementById('analyticsSub').textContent =
-    analyticsPeriod === 'week' ? 'Пн–Нд поточного тижня' : `${dayInfos.length} днів цього місяця`;
 
   // Per-bar calorie values are only rendered in week mode — with ~31 narrow
   // columns in month mode there isn't room for readable labels, so month
@@ -901,52 +968,158 @@ function renderAnalytics() {
     });
   });
 
-  renderAnalyticsSummary(dayInfos, target);
+  const loggedDays = dayInfos.filter((d) => d.hasData);
+  renderAnalyticsInsight(loggedDays, target);
+  renderAnalyticsMacros(loggedDays);
+  renderAnalyticsCategories(loggedDays);
+  renderAnalyticsDiscipline(loggedDays, target);
   renderAnalyticsDayDetail();
+  renderPeriodNav(dates);
   positionPeriodToggleThumb();
 }
 
-// Formats a calorie count with a thousands separator for the summary cards
-// (e.g. 1980 -> "1,980"), purely cosmetic — never fed back into logic.
+// Formats a calorie count with a thousands separator (e.g. 1980 -> "1,980"),
+// purely cosmetic — never fed back into logic.
 function fmtKcal(n) {
   return Math.round(n).toLocaleString('en-US');
 }
 
-// Sleek 3-up "quick insight" row under the chart: average kcal/day, how many
-// logged days stayed within target, and what share of period calories came
-// from "Погане ЇДЛО". All derived client-side from the same dayInfos the
-// chart already computed — no extra data fetch.
-function renderAnalyticsSummary(dayInfos, target) {
-  const summaryEl = document.getElementById('analyticsSummary');
-  const loggedDays = dayInfos.filter((d) => d.hasData);
-
-  if (!loggedDays.length) {
-    summaryEl.innerHTML = '';
-    return;
-  }
+// Dynamic smart-advice banner: green when the period's average calories sit
+// within the daily limit, amber when they don't — and the amber copy calls
+// out "Погане ЇДЛО" by name specifically when it's the main driver of the
+// overage (>=20% of period calories), otherwise gives a generic overage
+// message rather than misattributing the cause.
+function renderAnalyticsInsight(loggedDays, target) {
+  const el = document.getElementById('analyticsInsight');
+  if (!loggedDays.length) { el.innerHTML = ''; return; }
 
   const totalCalories = loggedDays.reduce((sum, d) => sum + d.calories, 0);
   const totalJunk = loggedDays.reduce((sum, d) => sum + (d.junk || 0), 0);
-  const avgPerDay = totalCalories / loggedDays.length;
+  const avgCalories = totalCalories / loggedDays.length;
+  const junkPct = totalCalories > 0 ? (totalJunk / totalCalories) * 100 : 0;
+
+  let tone, icon, text;
+  if (avgCalories <= target) {
+    tone = 'good'; icon = '✅';
+    text = `Чудова робота! Ви дотримуєтесь норми, середній залишок: ${fmtKcal(target - avgCalories)} ккал/день.`;
+  } else {
+    tone = 'warn'; icon = '⚠️';
+    const overBy = fmtKcal(avgCalories - target);
+    text = junkPct >= 20
+      ? `Зверніть увагу: спостерігається систематичний перебір калорій (в середньому на ${overBy} ккал/день) за рахунок «Поганого їдла».`
+      : `Зверніть увагу: середній перебір становить ${overBy} ккал/день понад денну норму.`;
+  }
+
+  el.innerHTML = `
+    <div class="insight-card ${tone}">
+      <div class="insight-icon">${icon}</div>
+      <div>${text}</div>
+    </div>`;
+}
+
+// Average daily protein/carbs/fat for the period vs the same daily goals
+// used elsewhere in the app (CATALOG.protein_goal etc.) — reuses the
+// .macro-row/.macro-track markup pattern from the hero dashboard.
+function renderAnalyticsMacros(loggedDays) {
+  const el = document.getElementById('analyticsMacros');
+  if (!loggedDays.length) { el.innerHTML = ''; return; }
+
+  const n = loggedDays.length;
+  const avg = {
+    protein: loggedDays.reduce((s, d) => s + d.protein, 0) / n,
+    carbs: loggedDays.reduce((s, d) => s + d.carbs, 0) / n,
+    fat: loggedDays.reduce((s, d) => s + d.fat, 0) / n,
+  };
+  const goals = { protein: CATALOG.protein_goal, carbs: CATALOG.carbs_goal, fat: CATALOG.fat_goal };
+  const rows = [
+    { key: 'protein', label: 'Білки' },
+    { key: 'carbs', label: 'Вуглеводи' },
+    { key: 'fat', label: 'Жири' },
+  ];
+
+  const rowsHtml = rows.map((r) => {
+    const pct = goals[r.key] ? Math.min(100, (avg[r.key] / goals[r.key]) * 100) : 0;
+    return `
+      <div class="macro">
+        <div class="macro-top">
+          <span class="macro-name">${r.label}</span>
+          <span class="macro-val mono">${Math.round(avg[r.key])} / ${Math.round(goals[r.key])} г</span>
+        </div>
+        <div class="macro-track"><div class="macro-fill ${r.key}" style="width:${pct}%"></div></div>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="section-title">Середнє БЖВ / день</div>
+    <div class="macros-card macros-list">${rowsHtml}</div>`;
+}
+
+// Top calorie sources for the period, ranked by their share of total
+// calories logged — answers "where do my calories actually go", not just
+// "how many". Skips categories with zero contribution.
+function renderAnalyticsCategories(loggedDays) {
+  const el = document.getElementById('analyticsCategories');
+  if (!loggedDays.length) { el.innerHTML = ''; return; }
+
+  const totals = {};
+  for (const day of loggedDays) {
+    for (const [key, kcal] of Object.entries(day.categories || {})) {
+      totals[key] = (totals[key] || 0) + kcal;
+    }
+  }
+  const grandTotal = Object.values(totals).reduce((s, v) => s + v, 0);
+  if (grandTotal <= 0) { el.innerHTML = ''; return; }
+
+  const catMetaByKey = {};
+  for (const cat of CATALOG.categories) catMetaByKey[cat.key] = cat;
+
+  const ranked = Object.entries(totals)
+    .filter(([, kcal]) => kcal > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  const rowsHtml = ranked.map(([key, kcal]) => {
+    const meta = catMetaByKey[key];
+    const pct = Math.round((kcal / grandTotal) * 100);
+    const isJunk = key === JUNK_CATEGORY_KEY;
+    return `
+      <div class="category-row">
+        <div class="category-top">
+          <span class="category-name">${meta ? meta.emoji : '🍽️'} ${meta ? meta.name : key}</span>
+          <span class="category-pct">${pct}%</span>
+        </div>
+        <div class="category-bar-track"><div class="category-bar-fill ${isJunk ? 'junk' : ''}" style="width:${pct}%"></div></div>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="section-title">Топ джерел калорій</div>
+    <div class="category-breakdown">${rowsHtml}</div>`;
+}
+
+// Two quick discipline metrics: how many logged days stayed within target,
+// and the single best day — the one whose total calories landed closest to
+// the target (whether slightly under or over).
+function renderAnalyticsDiscipline(loggedDays, target) {
+  const el = document.getElementById('analyticsDiscipline');
+  if (!loggedDays.length) { el.innerHTML = ''; return; }
+
   const daysInNorm = loggedDays.filter((d) => d.calories <= target).length;
-  const junkPct = totalCalories > 0 ? Math.round((totalJunk / totalCalories) * 100) : 0;
+  const normClass = daysInNorm / loggedDays.length >= 0.7 ? 'good' : '';
 
-  const normClass = loggedDays.length && daysInNorm / loggedDays.length >= 0.7 ? 'good' : '';
-  const junkClass = junkPct > 15 ? 'warn' : '';
+  const bestDay = loggedDays.reduce((best, d) =>
+    Math.abs(d.calories - target) < Math.abs(best.calories - target) ? d : best
+  );
 
-  summaryEl.innerHTML = `
-    <div class="analytics-summary">
+  el.innerHTML = `
+    <div class="discipline-grid">
       <div class="summary-card">
-        <div class="summary-value mono">${fmtKcal(avgPerDay)}</div>
-        <div class="summary-label">Середнє / день</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-value mono ${normClass}">${daysInNorm}/${loggedDays.length}</div>
+        <div class="summary-value mono ${normClass}">${daysInNorm} з ${loggedDays.length}</div>
         <div class="summary-label">Днів у нормі</div>
       </div>
       <div class="summary-card">
-        <div class="summary-value mono ${junkClass}">${junkPct}%</div>
-        <div class="summary-label">Погане їдло</div>
+        <div class="summary-value mono">${fmtKcal(bestDay.calories)}</div>
+        <div class="summary-label">Кращий день · ${formatShortDate(bestDay.date)}</div>
       </div>
     </div>`;
 }
@@ -961,6 +1134,31 @@ function positionPeriodToggleThumb() {
   if (!toggle || !thumb || !activeBtn) return;
   thumb.style.width = `${activeBtn.offsetWidth}px`;
   thumb.style.transform = `translateX(${activeBtn.offsetLeft - 4}px)`;
+}
+
+// Updates the "‹ 10 Серпня – 16 Серпня ›" label and enables/disables the
+// nav arrows. "Next" is disabled once the anchor's period is already the
+// real current one (no future periods to show). "Prev" is disabled once
+// going back further would leave the HISTORY_LOOKBACK_DAYS window that
+// preloadHistory() actually populated — beyond that, days would render as
+// "empty" even if the user did log them, which would be misleading rather
+// than genuinely showing "no data".
+function renderPeriodNav(dates) {
+  const label = document.getElementById('periodNavLabel');
+  const prevBtn = document.getElementById('periodPrevBtn');
+  const nextBtn = document.getElementById('periodNextBtn');
+  if (!label || !prevBtn || !nextBtn) return;
+
+  label.textContent = formatPeriodNavLabel(analyticsPeriod, dates);
+
+  const currentPeriodStart = getPeriodStart(analyticsPeriod, TODAY);
+  const anchorPeriodStart = getPeriodStart(analyticsPeriod, analyticsAnchorDate);
+  nextBtn.disabled = anchorPeriodStart >= currentPeriodStart;
+
+  const cutoff = addDaysISO(TODAY, -HISTORY_LOOKBACK_DAYS);
+  const prevAnchor = shiftAnchor(analyticsPeriod, analyticsAnchorDate, -1);
+  const prevPeriodStart = getPeriodStart(analyticsPeriod, prevAnchor);
+  prevBtn.disabled = prevPeriodStart < cutoff;
 }
 
 function renderAnalyticsDayDetail() {
@@ -1016,6 +1214,7 @@ const analyticsOverlay = document.getElementById('analyticsOverlay');
 function openAnalytics() {
   analyticsPeriod = 'week';
   analyticsSelectedDate = null; // no day pre-selected on open
+  analyticsAnchorDate = TODAY; // always open on the current period
   document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.period === analyticsPeriod);
   });
@@ -1042,9 +1241,23 @@ document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((btn) 
     haptic('impact', 'light');
     analyticsPeriod = btn.dataset.period;
     analyticsSelectedDate = null;
+    analyticsAnchorDate = TODAY; // switching tabs jumps back to the current period
     document.querySelectorAll('#analyticsPeriodToggle [data-period]').forEach((b) => b.classList.toggle('active', b === btn));
     renderAnalytics();
   });
+});
+
+document.getElementById('periodPrevBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  analyticsAnchorDate = shiftAnchor(analyticsPeriod, analyticsAnchorDate, -1);
+  analyticsSelectedDate = null;
+  renderAnalytics();
+});
+document.getElementById('periodNextBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  analyticsAnchorDate = shiftAnchor(analyticsPeriod, analyticsAnchorDate, 1);
+  analyticsSelectedDate = null;
+  renderAnalytics();
 });
 
 // ---------------------------------------------------------------------------
