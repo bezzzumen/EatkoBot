@@ -582,6 +582,27 @@
   }
   .mode-toggle button.active { color: #fff; }
 
+  /* Period navigation — prev/next arrows around the current date range,
+     letting the user browse historical weeks/months. Disabled state (no
+     further data, or already at the current period) is dimmed + inert. */
+  .period-nav {
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    margin: 0 18px 16px;
+  }
+  .period-nav-btn {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
+    color: var(--tg-text); font-size: 16px; font-weight: 700; line-height: 1;
+    cursor: pointer; transition: opacity 0.2s ease, transform 0.15s ease;
+  }
+  .period-nav-btn:active { transform: scale(0.9); }
+  .period-nav-btn:disabled { opacity: 0.3; cursor: default; pointer-events: none; }
+  .period-nav-label {
+    font-size: 12.5px; font-weight: 700; color: var(--tg-text);
+    text-align: center; min-width: 0; letter-spacing: -0.01em;
+  }
+
   .chart-area { position: relative; padding: 22px 4px 4px; }
   .chart-baseline {
     position: absolute; left: 4px; right: 4px;
@@ -634,14 +655,67 @@
     text-transform: uppercase;
   }
 
-  /* Sleek 3-up summary grid under the chart: quick-glance average /
-     on-target days / junk-food share for the selected period. */
-  .analytics-summary {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  /* Dynamic smart-insight banner — tone (good/warn) driven by whether the
+     period's average calories are within the daily limit. */
+  .insight-card {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin: 18px 0 4px; padding: 13px 14px; border-radius: 16px;
+    font-size: 12.5px; font-weight: 600; line-height: 1.45;
+    border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .insight-card .insight-icon { font-size: 16px; flex-shrink: 0; line-height: 1.3; }
+  .insight-card.good {
+    background: rgba(52,211,153,0.1); border-color: rgba(52,211,153,0.3);
+    color: #d1fae5;
+  }
+  .insight-card.warn {
+    background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.32);
+    color: #fef3c7;
+  }
+  [data-theme="light"] .insight-card.good { color: #065f46; }
+  [data-theme="light"] .insight-card.warn { color: #78350f; }
+
+  /* Average daily BJU for the period — reuses the same .macro/.macro-track
+     markup as the hero dashboard, so it inherits the same gradient fills. */
+  .section-title {
+    font-size: 11px; font-weight: 700; color: var(--tg-hint);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin: 20px 2px 10px;
+  }
+  .macros-card {
+    padding: 14px; border-radius: 16px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .macros-list { display: flex; flex-direction: column; gap: 14px; }
+
+  /* Top calorie sources for the period, ranked and shown as horizontal
+     mini-bars — quick answer to "where do my calories actually go". */
+  .category-breakdown {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px; border-radius: 16px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .category-row .category-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; margin-bottom: 6px;
+  }
+  .category-row .category-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .category-row .category-pct { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--tg-hint); }
+  .category-bar-track { height: 6px; border-radius: var(--radius-pill); background: var(--glass-bg-strong); overflow: hidden; }
+  .category-bar-fill { height: 100%; border-radius: var(--radius-pill); background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2)); }
+  .category-bar-fill.junk { background: linear-gradient(90deg, var(--warning), var(--danger)); }
+
+  /* Discipline metrics — on-target day count + the single best day of the
+     period (closest to target). */
+  .discipline-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
     margin: 18px 0 4px;
   }
   .summary-card {
-    padding: 12px 6px; border-radius: 16px; text-align: center;
+    padding: 13px 10px; border-radius: 16px; text-align: center;
     background: var(--glass-bg); border: 1px solid var(--glass-border);
     -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
   }
@@ -658,7 +732,7 @@
   }
 
   .day-detail-card {
-    margin-top: 4px; padding: 16px;
+    margin-top: 20px; padding: 16px;
   }
   .day-detail-date { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
   .day-detail-kcal { font-family: 'Plus Jakarta Sans', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 700; margin-bottom: 14px; }
@@ -774,7 +848,7 @@
         <div class="sheet-emoji">📊</div>
         <div>
           <h2>Статистика</h2>
-          <div class="sub" id="analyticsSub"></div>
+          <div class="sub" id="analyticsSub">Огляд харчування</div>
         </div>
       </div>
       <button class="sheet-close" id="analyticsClose">✕</button>
@@ -786,9 +860,18 @@
       <button data-period="month">Поточний місяць</button>
     </div>
 
+    <div class="period-nav" id="periodNav">
+      <button class="period-nav-btn" id="periodPrevBtn" aria-label="Попередній період">‹</button>
+      <div class="period-nav-label" id="periodNavLabel"></div>
+      <button class="period-nav-btn" id="periodNextBtn" aria-label="Наступний період">›</button>
+    </div>
+
     <div class="sheet-scroll">
       <div id="analyticsChart"></div>
-      <div id="analyticsSummary"></div>
+      <div id="analyticsInsight"></div>
+      <div id="analyticsMacros"></div>
+      <div id="analyticsCategories"></div>
+      <div id="analyticsDiscipline"></div>
       <div id="analyticsDayDetail"></div>
     </div>
   </div>
