@@ -312,7 +312,19 @@ async function callGemini(systemInstruction, userText) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents: [{ role: 'user', parts: [{ text: userText }] }],
-      generationConfig: { temperature: 1.1, maxOutputTokens: 120 },
+      // Gemini 3.x models "think" before answering by default, and those
+      // invisible reasoning tokens count against maxOutputTokens — with a
+      // low budget (this used to be 120), thinking can eat nearly all of
+      // it and leave only a word or two of actual visible text. LOW keeps
+      // reasoning minimal for what's just a one-sentence creative line
+      // (not a task that needs deep reasoning), and maxOutputTokens is
+      // raised well past what the visible text alone needs, so even if
+      // thinking uses some of the budget there's still room left over.
+      generationConfig: {
+        temperature: 1.1,
+        maxOutputTokens: 400,
+        thinkingConfig: { thinkingLevel: 'LOW' },
+      },
     }),
   });
 
