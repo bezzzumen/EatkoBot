@@ -195,6 +195,21 @@ async function ensureSchema() {
   await turso.execute(`
     CREATE INDEX IF NOT EXISTS idx_sent_predictions_user ON sent_predictions(user_id, kind, sent_at)
   `);
+
+  // One row per (user, week) — week_start is always the Monday of that
+  // week (Europe/Kyiv), computed server-side, never trusted from the
+  // client. Upserted on save, so re-entering a value for the same week
+  // just overwrites it rather than creating a duplicate.
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS weekly_weight (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      week_start  TEXT NOT NULL,
+      weight_kg   REAL NOT NULL,
+      updated_at  TEXT DEFAULT (datetime('now')),
+      UNIQUE(user_id, week_start)
+    )
+  `);
 }
 
 async function getOrCreateUser({ telegram_id, first_name, username }) {
@@ -441,6 +456,55 @@ async function resetUserPredictionHistory(userId, kind) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Weekly weight tracking
+// ---------------------------------------------------------------------------
+
+// week_start is always computed server-side (see mondayOfWeek() in
+// server.js) — never trusted from the client — so a user can't backdate or
+// write into an arbitrary week via this endpoint.
+async function upsertWeeklyWeight(userId, weekStart, weightKg) {
+  if (!turso) throw new Error('Database not configured');
+  await turso.execute({
+    sql: `
+      INSERT INTO weekly_weight (user_id, week_start, weight_kg, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, week_start) DO UPDATE SET
+        weight_kg = excluded.weight_kg,
+        updated_at = datetime('now')
+    `,
+    args: [userId, weekStart, weightKg],
+  });
+}
+
+// Most recent `limit` weeks with an entry, newest first. Deliberately NOT
+// "the current week and the exact prior calendar week" — if the user
+// skipped a week or two, "previous" should still mean their last real
+// entry, not a blank. The server derives current/previous from this list
+// by comparing week_start values, not by assuming adjacency.
+async function getRecentWeeklyWeights(userId, limit = 8) {
+  if (!turso) return [];
+  const result = await turso.execute({
+    sql: `
+      SELECT week_start, weight_kg FROM weekly_weight
+      WHERE user_id = ?
+      ORDER BY week_start DESC
+      LIMIT ?
+    `,
+    args: [userId, limit],
+  });
+  return result.rows.map((row) => ({ week_start: row.week_start, weight_kg: row.weight_kg }));
+}
+
+// The Monday-reminder audience: every authorized user, not just people who
+// already logged a weight before (the whole point of the reminder is to
+// reach people who haven't yet).
+async function getAllAllowedTelegramIds() {
+  if (!turso) return [];
+  const result = await turso.execute('SELECT telegram_id FROM allowed_users');
+  return result.rows.map((row) => row.telegram_id);
+}
+
 module.exports = {
   CATALOG,
   DAILY_CALORIE_TARGET,
@@ -458,4 +522,7 @@ module.exports = {
   getRecentPredictions,
   recordSentPrediction,
   resetUserPredictionHistory,
+  upsertWeeklyWeight,
+  getRecentWeeklyWeights,
+  getAllAllowedTelegramIds,
 };
