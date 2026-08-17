@@ -307,6 +307,34 @@
   .ring-center .kcal-target { font-size: 12px; color: var(--tg-hint); margin-top: 5px; font-weight: 500; }
   .ring-center .kcal-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; font-weight: 600; }
 
+  /* Main-screen weight widget — a small pill between the calorie ring and
+     the macro rows. Two states: filled (shows this week's kg + trend vs
+     last week) and "prompt" (no entry yet this week — warm/amber accent
+     to invite a tap, matching the streak badge's own pulse pattern). */
+  .weight-pill {
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 16px; border-radius: var(--radius-pill);
+    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+    color: var(--tg-text); font-size: 12.5px; font-weight: 700;
+    cursor: pointer; z-index: 2;
+    transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+  }
+  .weight-pill:active { transform: scale(0.95); }
+  .weight-pill .weight-icon { font-size: 13px; }
+  .weight-pill .weight-trend.down { color: var(--success); }
+  .weight-pill .weight-trend.up { color: var(--danger); }
+  .weight-pill.prompt {
+    background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.38);
+    color: #fde68a;
+    animation: weight-prompt-pulse 2.4s ease-in-out infinite;
+  }
+  [data-theme="light"] .weight-pill.prompt { color: #92400e; }
+  @keyframes weight-prompt-pulse {
+    0%, 100% { box-shadow: 0 0 0 rgba(251,191,36,0); }
+    50% { box-shadow: 0 0 14px rgba(251,191,36,0.45); }
+  }
+
   .macros-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; z-index: 2; }
   .macro { display: flex; flex-direction: column; gap: 6px; }
   .macro .macro-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; }
@@ -783,6 +811,29 @@
   .day-detail-kcal { font-family: 'Plus Jakarta Sans', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 700; margin-bottom: 14px; }
   .day-detail-kcal.over { color: var(--danger); }
 
+  /* ===== WEIGHT MODAL ===== */
+  .weight-hero { text-align: center; padding: 10px 0 4px; }
+  .weight-hero-value {
+    font-size: 40px; font-weight: 800; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .weight-hero-label {
+    font-size: 11px; color: var(--tg-hint); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px;
+  }
+  .weight-compare {
+    display: flex; flex-direction: column; gap: 10px;
+    margin: 18px 0; padding: 14px; border-radius: 16px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .weight-compare-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+  .weight-compare-row .label { color: var(--tg-hint); font-weight: 600; }
+  .weight-compare-row .value { font-weight: 800; font-variant-numeric: tabular-nums; }
+  .weight-compare-row .value.down { color: var(--success); }
+  .weight-compare-row .value.up { color: var(--danger); }
+  .weight-error { font-size: 12px; color: var(--danger); margin-top: 8px; min-height: 14px; }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; }
   }
@@ -846,6 +897,12 @@
         <div class="kcal-label" id="kcalStatusLabel">залишок</div>
       </div>
     </div>
+
+    <button class="weight-pill" id="weightBtn" aria-label="Вага">
+      <span class="weight-icon">⚖️</span>
+      <span class="weight-text mono" id="weightPillText">…</span>
+      <span class="weight-trend mono" id="weightPillTrend"></span>
+    </button>
 
     <div class="macros-row">
       <div class="macro">
@@ -918,6 +975,43 @@
       <div id="analyticsCategories"></div>
       <div id="analyticsDiscipline"></div>
       <div id="analyticsDayDetail"></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="weightOverlay">
+  <div class="sheet weight-sheet" id="weightSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div class="titlewrap">
+        <div class="sheet-emoji">⚖️</div>
+        <div>
+          <h2>Вага</h2>
+          <div class="sub">Щотижневий підсумок</div>
+        </div>
+      </div>
+      <button class="sheet-close" id="weightClose">✕</button>
+    </div>
+
+    <div class="sheet-scroll">
+      <div class="weight-hero">
+        <div class="weight-hero-value mono" id="weightHeroValue">—</div>
+        <div class="weight-hero-label">Поточний тиждень</div>
+      </div>
+
+      <div id="weightCompare"></div>
+
+      <div class="custom-input-wrap">
+        <div class="custom-input-label">Нове значення</div>
+        <div class="custom-input-row">
+          <input type="number" inputmode="decimal" step="0.1" id="weightInput" placeholder="напр. 78.5" />
+          <div class="unit-label">кг</div>
+        </div>
+        <div class="weight-error" id="weightError"></div>
+      </div>
+    </div>
+    <div class="sheet-footer">
+      <button class="confirm-btn" id="weightSaveBtn">Зберегти вагу</button>
     </div>
   </div>
 </div>
