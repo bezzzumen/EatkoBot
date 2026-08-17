@@ -34,7 +34,14 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 3000;
 const WEBAPP_URL = process.env.WEBAPP_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Default model: gemini-2.5-flash used to work here but started 404ing with
+// "This model ... is no longer available to new users" — Google restricts
+// some older models to accounts/projects that had access before a cutoff,
+// separately from full deprecation. gemini-3.5-flash is the current GA
+// model and isn't subject to that restriction. If you have an older
+// project that DOES still have gemini-2.5-flash access, you can override
+// this via the GEMINI_MODEL env var — no code change needed either way.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 // Comma-separated numeric Telegram user IDs allowed to run /invite. Strictly
 // validated: Telegram user IDs are always numeric, so anything else in this
 // list is almost certainly a typo — dropped, with a warning, rather than
