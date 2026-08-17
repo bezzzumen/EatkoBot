@@ -313,17 +313,19 @@ async function callGemini(systemInstruction, userText) {
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents: [{ role: 'user', parts: [{ text: userText }] }],
       // Gemini 3.x models "think" before answering by default, and those
-      // invisible reasoning tokens count against maxOutputTokens — with a
-      // low budget (this used to be 120), thinking can eat nearly all of
-      // it and leave only a word or two of actual visible text. LOW keeps
-      // reasoning minimal for what's just a one-sentence creative line
-      // (not a task that needs deep reasoning), and maxOutputTokens is
-      // raised well past what the visible text alone needs, so even if
-      // thinking uses some of the budget there's still room left over.
+      // invisible reasoning tokens are deducted from maxOutputTokens.
+      // LOW still wasn't low enough — MINIMAL is the lowest tier the API
+      // supports for Flash models (thinking can't be fully turned off on
+      // 3.x the way it could pre-3.x, only minimized). NOTE: the legacy
+      // `thinkingBudget` field is NOT combined with `thinkingLevel` here —
+      // Gemini's API rejects requests that send both together, and
+      // thinkingLevel is the current field for 3.x, so that's the one
+      // actually driving this. maxOutputTokens raised to 1000 as extra
+      // headroom on top of that.
       generationConfig: {
         temperature: 1.1,
-        maxOutputTokens: 400,
-        thinkingConfig: { thinkingLevel: 'LOW' },
+        maxOutputTokens: 1000,
+        thinkingConfig: { thinkingLevel: 'MINIMAL' },
       },
     }),
   });
@@ -334,8 +336,30 @@ async function callGemini(systemInstruction, userText) {
   }
 
   const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const candidate = data?.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text;
   if (!text || !text.trim()) throw new Error('Gemini returned no text');
+
+  // Belt-and-suspenders against the exact bug just reported: if the API
+  // itself says the response got cut off (finishReason MAX_TOKENS — thinking
+  // or otherwise eating the budget before the sentence finished), treat
+  // that as a failed attempt rather than silently shipping a truncated
+  // sentence like "...декорації ва". This is not text WE are truncating
+  // (see the .slice() calls above — neither touches this text at all,
+  // only a date string and a capped error-log excerpt) — it's Gemini's own
+  // signal that ITS output was cut short. Throwing here means the existing
+  // retry loop (MAX_GENERATION_ATTEMPTS, see getFortuneLine below) gets
+  // another attempt instead of accepting the partial text.
+  if (candidate?.finishReason === 'MAX_TOKENS') {
+    const truncationErr = new Error(`Gemini response was truncated (finishReason=MAX_TOKENS, ${text.length} chars received): "${text}"`);
+    // Whether a given generation gets cut off is stochastic (depends on how
+    // much that specific call happened to "think"), unlike a genuine API
+    // failure (bad auth, network, 404) — so this is worth retrying with a
+    // fresh salt rather than giving up immediately. See the catch block in
+    // getFortuneLine below, which checks this flag.
+    truncationErr.retryable = true;
+    throw truncationErr;
+  }
 
   return text.trim().replace(/^["'«»]+|["'«»]+$/g, '').trim();
 }
@@ -384,6 +408,10 @@ async function getFortuneLine(isSuccessful, userId) {
       // Exact repeat of something this user already received recently —
       // try again with a new salt.
     } catch (err) {
+      if (err.retryable) {
+        console.warn(`[gemini] attempt ${attempt} truncated, retrying:`, err.message);
+        continue; // stochastic — a fresh attempt has a real chance of not truncating
+      }
       console.warn(`[gemini] attempt ${attempt} failed, falling back:`, err.message);
       break; // a hard API failure won't fix itself by retrying immediately
     }
