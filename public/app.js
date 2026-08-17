@@ -488,6 +488,10 @@ async function init() {
       console.warn('[init] background catalog refresh failed, staying on cached catalog:', err);
     }
   }
+
+  // Fire-and-forget: renders its own "…" placeholder immediately and fills
+  // in once it resolves — never blocks the rest of init().
+  loadWeight();
 }
 
 // Pure, synchronous recompute + render — no I/O, no await. Call this
@@ -592,6 +596,184 @@ async function syncDailyStatus() {
     console.error('[sync] Background status sync failed (will retry next action/open):', err.message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Weekly weight tracking
+// ---------------------------------------------------------------------------
+// Unlike food logs, weight lives server-side (see database.js's
+// weekly_weight table) — there's exactly one number per user per week, so
+// there's no offline-editing use case that would justify the
+// CloudStorage-first approach used for daily logs. week_start itself is
+// always computed by the server (Europe/Kyiv Monday), never by this client
+// — see mondayOfWeek() in server.js.
+
+// { current_week: {week_start, weight_kg}|null, previous_week: {...}|null }
+// while `loading` is true, current_week/previous_week are stale/unset —
+// renderWeightWidget() shows a neutral "…" placeholder for that case rather
+// than misreporting "no entry yet".
+let weightState = { loading: true, current_week: null, previous_week: null };
+
+async function loadWeight() {
+  if (!INIT_DATA) { weightState.loading = false; renderWeightWidget(); return; } // outside Telegram — nothing to load
+  try {
+    const res = await fetch('/api/weight', { headers: { 'X-Telegram-Init-Data': INIT_DATA } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    weightState.current_week = body.current_week || null;
+    weightState.previous_week = body.previous_week || null;
+  } catch (err) {
+    console.warn('[weight] load failed (widget will show its empty state):', err.message);
+  } finally {
+    weightState.loading = false;
+    renderWeightWidget();
+  }
+}
+
+// diff = current - previous. "down" (lost weight) is the good/green case
+// here specifically because this app tracks a calorie *deficit* goal —
+// unlike calories-in-a-day where over/under has its own meaning, weight
+// trend direction only reads as good/bad relative to what the user is
+// trying to do, which for this app is consistently "trending down".
+function weightTrendClass(diff) {
+  if (diff < 0) return 'down';
+  if (diff > 0) return 'up';
+  return '';
+}
+
+function renderWeightWidget() {
+  const btn = document.getElementById('weightBtn');
+  const textEl = document.getElementById('weightPillText');
+  const trendEl = document.getElementById('weightPillTrend');
+  if (!btn || !textEl || !trendEl) return;
+
+  if (weightState.loading) {
+    btn.classList.remove('prompt');
+    textEl.textContent = '⚖️ …';
+    trendEl.textContent = '';
+    return;
+  }
+
+  if (!weightState.current_week) {
+    btn.classList.add('prompt');
+    textEl.textContent = 'Внесіть вагу';
+    trendEl.textContent = '';
+    return;
+  }
+
+  btn.classList.remove('prompt');
+  textEl.textContent = `${fmtNum(weightState.current_week.weight_kg)} кг`;
+
+  if (weightState.previous_week) {
+    const diff = weightState.current_week.weight_kg - weightState.previous_week.weight_kg;
+    const arrow = diff < 0 ? '📉' : diff > 0 ? '📈' : '➖';
+    const sign = diff > 0 ? '+' : '';
+    trendEl.className = `weight-trend mono ${weightTrendClass(diff)}`;
+    trendEl.textContent = `${arrow} ${sign}${fmtNum(diff)}`;
+  } else {
+    trendEl.className = 'weight-trend mono';
+    trendEl.textContent = '';
+  }
+}
+
+function openWeightSheet() {
+  const errorEl = document.getElementById('weightError');
+  const input = document.getElementById('weightInput');
+  const heroEl = document.getElementById('weightHeroValue');
+  const compareEl = document.getElementById('weightCompare');
+  const saveBtn = document.getElementById('weightSaveBtn');
+  if (!errorEl || !input || !heroEl || !compareEl || !saveBtn) return;
+
+  errorEl.textContent = '';
+  saveBtn.disabled = false;
+  input.value = weightState.current_week ? weightState.current_week.weight_kg : '';
+  heroEl.textContent = weightState.current_week ? `${fmtNum(weightState.current_week.weight_kg)} кг` : '—';
+
+  if (weightState.previous_week) {
+    const rows = [`
+      <div class="weight-compare-row">
+        <span class="label">Минулий тиждень</span>
+        <span class="value mono">${fmtNum(weightState.previous_week.weight_kg)} кг</span>
+      </div>`];
+    if (weightState.current_week) {
+      const diff = weightState.current_week.weight_kg - weightState.previous_week.weight_kg;
+      const dot = diff < 0 ? '🟢' : diff > 0 ? '🔴' : '⚪';
+      const sign = diff > 0 ? '+' : '';
+      rows.push(`
+      <div class="weight-compare-row">
+        <span class="label">Різниця</span>
+        <span class="value mono ${weightTrendClass(diff)}">${dot} ${sign}${fmtNum(diff)} кг</span>
+      </div>`);
+    }
+    compareEl.innerHTML = rows.join('');
+  } else {
+    compareEl.innerHTML = `<div class="empty-note">Ще немає даних за минулий тиждень.</div>`;
+  }
+
+  weightOverlay.classList.add('show');
+}
+function closeWeightSheet() {
+  weightOverlay.classList.remove('show');
+}
+
+function wireUpWeightForm() {
+  const input = document.getElementById('weightInput');
+  const btn = document.getElementById('weightSaveBtn');
+  const errorEl = document.getElementById('weightError');
+  if (!input || !btn || !errorEl) return;
+
+  async function submit() {
+    errorEl.textContent = '';
+    const val = parseFloat(input.value);
+    if (!Number.isFinite(val) || val < 20 || val > 400) {
+      errorEl.textContent = 'Введіть коректне значення ваги (20–400 кг).';
+      return;
+    }
+    if (!INIT_DATA) {
+      errorEl.textContent = 'Відкрийте це через Telegram-бота.';
+      return;
+    }
+
+    btn.disabled = true;
+    haptic('impact', 'medium');
+
+    try {
+      const res = await fetch('/api/weight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+        body: JSON.stringify({ weight_kg: val }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'Не вдалося зберегти вагу. Спробуйте ще раз.');
+
+      weightState.current_week = body.current_week || null;
+      weightState.previous_week = body.previous_week || null;
+      renderWeightWidget();
+
+      haptic('notification', 'success');
+      showToast('Вагу збережено ⚖️');
+      closeWeightSheet();
+    } catch (err) {
+      haptic('notification', 'error');
+      errorEl.textContent = err.message;
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+}
+
+const weightOverlay = document.getElementById('weightOverlay');
+document.getElementById('weightBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  openWeightSheet();
+});
+document.getElementById('weightClose')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  closeWeightSheet();
+});
+weightOverlay?.addEventListener('click', (e) => { if (e.target === weightOverlay) closeWeightSheet(); });
+wireUpWeightForm();
 
 // ---------------------------------------------------------------------------
 // Hero: ring + macros
