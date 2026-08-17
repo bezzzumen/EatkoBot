@@ -24,6 +24,7 @@ require('dotenv').config();
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
+const cron = require('node-cron');
 const { Bot, InlineKeyboard } = require('grammy');
 
 const db = require('./database');
@@ -68,6 +69,19 @@ function todayISO(timeZone = DIET_TIMEZONE) {
   }).formatToParts(new Date());
   const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
   return `${map.year}-${map.month}-${map.day}`;
+}
+
+// Monday (Europe/Kyiv) of the week containing the given YYYY-MM-DD date —
+// the canonical week_start used for weekly_weight rows. Used both to
+// resolve "today's" week when saving/reading weight, and to derive
+// current/previous from whatever weeks actually have an entry.
+function mondayOfWeek(dateISO) {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const jsDay = dt.getUTCDay(); // 0=Sun..6=Sat
+  const deltaToMonday = jsDay === 0 ? -6 : 1 - jsDay;
+  dt.setUTCDate(dt.getUTCDate() + deltaToMonday);
+  return dt.toISOString().slice(0, 10);
 }
 
 if (!BOT_TOKEN || BOT_TOKEN === 'your_token_here') {
@@ -542,6 +556,101 @@ app.post('/api/sync-status', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Weekly weight tracking
+// ---------------------------------------------------------------------------
+
+// Picks "current" (this week's entry, if any) and "previous" (the most
+// recent entry strictly before this week — not necessarily last week, in
+// case the user skipped one) out of a newest-first list of entries.
+function resolveCurrentAndPrevious(recentWeights, currentWeekStart) {
+  const current = recentWeights.find((w) => w.week_start === currentWeekStart) || null;
+  const previous = recentWeights.find((w) => w.week_start < currentWeekStart) || null;
+  return { current_week: current, previous_week: previous };
+}
+
+// Shared auth + allowlist check for both weight endpoints below — identical
+// to the check inline in /api/sync-status, factored out since two endpoints
+// need it here.
+async function authenticateAllowedUser(req, res) {
+  const tgUser = validateInitData(req.header('X-Telegram-Init-Data'));
+  if (!tgUser) {
+    res.status(401).json({ error: 'Invalid or missing Telegram auth data' });
+    return null;
+  }
+  if (!db.isDatabaseConfigured()) {
+    res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+    return null;
+  }
+  try {
+    const allowed = await db.isUserAllowed({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    if (!allowed) {
+      res.status(403).json({ error: 'Not authorized — an invite code is required' });
+      return null;
+    }
+  } catch (err) {
+    console.error('[weight] authorization check failed:', err.message);
+    res.status(502).json({ error: 'Failed to check authorization' });
+    return null;
+  }
+  return tgUser;
+}
+
+// Returns this user's current-week and previous (most recent prior) weight
+// entries, so the main-screen widget and the "Вага" sheet both have
+// everything they need in one call.
+app.get('/api/weight', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const recent = await db.getRecentWeeklyWeights(userId);
+    res.json(resolveCurrentAndPrevious(recent, mondayOfWeek(todayISO())));
+  } catch (err) {
+    console.error('[weight:get] failed:', err.message);
+    res.status(502).json({ error: 'Failed to load weight' });
+  }
+});
+
+// Saves this week's weight (upsert — re-entering just overwrites the same
+// week_start row). week_start is always computed here, server-side, from
+// today's real date — never taken from the request body, so a client can't
+// write into an arbitrary past/future week.
+app.post('/api/weight', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const weightKg = Number(req.body?.weight_kg);
+  if (!Number.isFinite(weightKg) || weightKg < 20 || weightKg > 400) {
+    return res.status(400).json({ error: 'weight_kg must be a realistic number between 20 and 400' });
+  }
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const weekStart = mondayOfWeek(todayISO());
+    await db.upsertWeeklyWeight(userId, weekStart, weightKg);
+
+    const recent = await db.getRecentWeeklyWeights(userId);
+    res.json(resolveCurrentAndPrevious(recent, weekStart));
+  } catch (err) {
+    console.error('[weight:post] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося зберегти вагу. Спробуйте ще раз.' });
+  }
+});
+
 // The evening broadcast: hit by an external pinger (e.g. cron-job.org) or a
 // plain browser visit — no request body, no Telegram initData needed, since
 // it isn't acting on behalf of any one user. Instead it looks up every user
@@ -587,6 +696,64 @@ app.get('/api/trigger-evening-summary', async (req, res) => {
   }
 
   res.json({ success: true, count: sentCount, message: `Summaries sent to ${sentCount} users` });
+});
+
+// ---------------------------------------------------------------------------
+// Monday weight reminder
+// ---------------------------------------------------------------------------
+
+const WEIGHT_REMINDER_TEXT = '⚖️ Новий тиждень! Зайдіть у додаток та зафіксуйте вашу поточну вагу.';
+
+// Sends the Monday weight-reminder to every allowed user (the whole
+// allowlist, not just people who've already logged a weight before — the
+// point is to reach people who haven't). Shared by both the internal
+// node-cron schedule below and the /api/trigger-weight-reminder fallback,
+// same "one failure shouldn't block the rest" pattern as the evening
+// broadcast above.
+async function sendWeightReminders() {
+  if (!db.isDatabaseConfigured()) {
+    console.warn('[weight-reminder] Skipped — database not configured.');
+    return 0;
+  }
+
+  let telegramIds;
+  try {
+    telegramIds = await db.getAllAllowedTelegramIds();
+  } catch (err) {
+    console.error('[weight-reminder] failed to load allowed users:', err.message);
+    return 0;
+  }
+
+  const keyboard = WEBAPP_URL && !WEBAPP_URL.includes('your-public-url-here')
+    ? new InlineKeyboard().webApp('⚖️ Відкрити застосунок', WEBAPP_URL)
+    : undefined;
+
+  let sentCount = 0;
+  for (const telegramId of telegramIds) {
+    try {
+      await bot.api.sendMessage(telegramId, WEIGHT_REMINDER_TEXT, keyboard ? { reply_markup: keyboard } : undefined);
+      sentCount++;
+    } catch (err) {
+      // One user blocking the bot (or similar) shouldn't stop the rest.
+      console.error(`[weight-reminder] failed for user ${telegramId}:`, err.message);
+    }
+  }
+
+  console.log(`[weight-reminder] Sent to ${sentCount}/${telegramIds.length} users`);
+  return sentCount;
+}
+
+// Manual/external-pinger fallback for the reminder, mirroring
+// /api/trigger-evening-summary above — same reasoning: Render's free tier
+// puts the instance to sleep, and internal cron (below) simply doesn't fire
+// while the process isn't running, so an external scheduler (e.g.
+// cron-job.org) hitting this URL every Monday 09:00 Europe/Kyiv is the
+// reliable way to guarantee delivery even if the node-cron schedule was
+// asleep at 09:00. Safe to call more than once in the same week — it's
+// just a broadcast, not tied to any "already sent today" state.
+app.get('/api/trigger-weight-reminder', async (req, res) => {
+  const count = await sendWeightReminders();
+  res.json({ success: true, count, message: `Weight reminder sent to ${count} users` });
 });
 
 // --- Static file serving (after API routes) ---
@@ -688,6 +855,23 @@ db.ensureSchema()
     await bot.api.deleteWebhook({ drop_pending_updates: true });
     bot.start();
     console.log('✅ Telegram bot is polling for updates');
+
+    // Every Monday at 09:00, Europe/Kyiv. NOTE: like the evening broadcast
+    // above, this only fires if the process is actually awake at that
+    // moment — Render's free tier sleeps an idle instance, and sleeping
+    // instances don't run scheduled code, internal cron included. This is
+    // still wired up exactly as requested (in-process node-cron); for a
+    // guaranteed delivery even through a cold instance, also point an
+    // external scheduler (e.g. cron-job.org) at GET /api/trigger-weight-reminder
+    // for the same time — it does the identical send, just triggered
+    // externally instead of by this in-process timer.
+    cron.schedule('0 9 * * 1', () => {
+      console.log('[weight-reminder] Monday 09:00 Kyiv — running scheduled reminder.');
+      sendWeightReminders().catch((err) => {
+        console.error('[weight-reminder] scheduled run failed:', err.message);
+      });
+    }, { timezone: DIET_TIMEZONE });
+    console.log('✅ Monday weight-reminder cron scheduled (09:00 Europe/Kyiv)');
   })
   .catch((err) => {
     console.error('[!] Failed to set up the database schema:', err.message);
