@@ -1738,6 +1738,109 @@ function openJunkSheet() {
   openSheet();
 }
 
+// --- КБЖУ calculator sheet: per-100g calories x portion weight -> total
+// kcal, added directly to JUNK_KEY exactly like the quick-add junk sheet
+// above (same optimistic-update + persistAndSync pattern), then closes. ---
+
+function openCalculatorSheet() {
+  sheetEmoji.textContent = '🧮';
+  sheetTitle.textContent = 'Калькулятор';
+  sheetSub.textContent = 'Калорійність на 100г × вага порції';
+
+  const calcState = { per100: null, grams: null };
+
+  function computedTotal() {
+    if (!Number.isFinite(calcState.per100) || !Number.isFinite(calcState.grams)) return 0;
+    return Math.max(0, (calcState.per100 * calcState.grams) / 100);
+  }
+
+  function render() {
+    const total = computedTotal();
+
+    sheetContent.innerHTML = `
+      <div class="sheet-scroll">
+        <div class="calc-result">
+          <div class="calc-result-value mono" id="calcResultValue">${fmtNum(round1(total))}</div>
+          <div class="calc-result-label">ккал загалом</div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Калорійність на 100г (ккал)</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="calcPer100Input" placeholder="напр. 250" value="${calcState.per100 ?? ''}" />
+            <div class="unit-label">ккал</div>
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Вага порції (г)</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="calcGramsInput" placeholder="напр. 150" value="${calcState.grams ?? ''}" />
+            <div class="unit-label">г</div>
+          </div>
+        </div>
+      </div>
+      <div class="sheet-footer">
+        <button class="confirm-btn" id="calcSubmitBtn" ${total > 0 ? '' : 'disabled'}>Зарахувати в Погане ЇДЛО</button>
+      </div>
+    `;
+
+    bind();
+  }
+
+  function bind() {
+    const per100Input = document.getElementById('calcPer100Input');
+    per100Input?.addEventListener('input', () => {
+      const val = parseFloat(per100Input.value);
+      calcState.per100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const gramsInput = document.getElementById('calcGramsInput');
+    gramsInput?.addEventListener('input', () => {
+      const val = parseFloat(gramsInput.value);
+      calcState.grams = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const submitBtn = document.getElementById('calcSubmitBtn');
+    submitBtn?.addEventListener('click', () => {
+      const total = round1(computedTotal());
+      if (total <= 0) return;
+      haptic('impact', 'medium');
+
+      // OPTIMISTIC: same pattern as the junk-kcal quick-add sheet — mutate
+      // in-memory state and re-render instantly, then persist in the
+      // background without the UI waiting on it.
+      const dayLog = dayLogCache.get(TODAY) || {};
+      dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + total);
+      setDayLogInMemory(TODAY, dayLog);
+      recomputeAndRender();
+
+      haptic('notification', 'success');
+      closeSheet();
+
+      persistAndSync();
+    });
+  }
+
+  function updateResult() {
+    const total = computedTotal();
+    const resultEl = document.getElementById('calcResultValue');
+    if (resultEl) resultEl.textContent = fmtNum(round1(total));
+    const submitBtn = document.getElementById('calcSubmitBtn');
+    if (submitBtn) submitBtn.disabled = !(total > 0);
+  }
+
+  render();
+  openSheet();
+}
+
+document.getElementById('calcBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  openCalculatorSheet();
+});
+
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
