@@ -640,39 +640,22 @@ function weightTrendClass(diff) {
   return '';
 }
 
+// The Вага button is now a compact, statically-labeled action-row button
+// (like Калькулятор/Статистика) rather than a pill showing the live weight
+// value — that detail now lives only inside the weight sheet itself
+// (openWeightSheet's weightHeroValue/weightCompare). This just toggles the
+// "prompt" nudge state — an amber pulse inviting a tap — when no weight has
+// been logged yet this week, mirroring the old pill's prompt behavior.
 function renderWeightWidget() {
   const btn = document.getElementById('weightBtn');
-  const textEl = document.getElementById('weightPillText');
-  const trendEl = document.getElementById('weightPillTrend');
-  if (!btn || !textEl || !trendEl) return;
+  if (!btn) return;
 
   if (weightState.loading) {
     btn.classList.remove('prompt');
-    textEl.textContent = '⚖️ …';
-    trendEl.textContent = '';
     return;
   }
 
-  if (!weightState.current_week) {
-    btn.classList.add('prompt');
-    textEl.textContent = 'Внесіть вагу';
-    trendEl.textContent = '';
-    return;
-  }
-
-  btn.classList.remove('prompt');
-  textEl.textContent = `${fmtNum(weightState.current_week.weight_kg)} кг`;
-
-  if (weightState.previous_week) {
-    const diff = weightState.current_week.weight_kg - weightState.previous_week.weight_kg;
-    const arrow = diff < 0 ? '📉' : diff > 0 ? '📈' : '➖';
-    const sign = diff > 0 ? '+' : '';
-    trendEl.className = `weight-trend mono ${weightTrendClass(diff)}`;
-    trendEl.textContent = `${arrow} ${sign}${fmtNum(diff)}`;
-  } else {
-    trendEl.className = 'weight-trend mono';
-    trendEl.textContent = '';
-  }
+  btn.classList.toggle('prompt', !weightState.current_week);
 }
 
 function openWeightSheet() {
@@ -821,25 +804,13 @@ function setMacro(key, value, goal) {
 // Streak badge + weekly history row
 // ---------------------------------------------------------------------------
 
-// Ukrainian noun inflection for "день": 1/21/31... -> ДЕНЬ, 2-4/22-24... -> ДНІ,
-// 0/5-9/10/11-14/25... -> ДНІВ. The 11-14 special case must be checked before
-// the last-digit rule, since e.g. 12 ends in "2" but still takes ДНІВ.
-function pluralizeDays(n) {
-  const mod100 = Math.abs(n) % 100;
-  const mod10 = mod100 % 10;
-  if (mod100 >= 11 && mod100 <= 14) return 'ДНІВ';
-  if (mod10 === 1) return 'ДЕНЬ';
-  if (mod10 >= 2 && mod10 <= 4) return 'ДНІ';
-  return 'ДНІВ';
-}
-
 function renderStreak() {
   const streak = STATE.streak || 0;
-  const badge = document.getElementById('streakBadge');
-  const text = document.getElementById('streakText');
+  const el = document.getElementById('streakInline');
+  if (!el) return;
 
-  badge.classList.toggle('zero', streak === 0);
-  text.textContent = `${streak} ${pluralizeDays(streak)} ПОСПІЛЬ`;
+  el.classList.toggle('zero', streak === 0);
+  el.textContent = `🔥 ${streak}`;
 }
 
 const WEEK_STATUS_EMOJI = { success: '🔥', over: '❌', unlogged: '⚪', future: '⚪' };
