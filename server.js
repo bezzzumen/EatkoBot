@@ -706,18 +706,38 @@ app.post('/api/weight', async (req, res) => {
 // also doubles as a way to wake a sleeping Render free-tier instance on a
 // schedule, which internal cron can't do while the instance is asleep.
 app.get('/api/trigger-evening-summary', async (req, res) => {
+  // Never let a config/DB problem surface as a 502 to the external pinger —
+  // cron-job.org (and Render) will just see "the endpoint is broken" either
+  // way, but a clean 200 with success:false is diagnosable from the
+  // response body, where a 502 gives no information at all. This mirrors
+  // /api/trigger-weight-reminder below, which already returns 200 no
+  // matter what.
   if (!db.isDatabaseConfigured()) {
-    return res.status(500).json({ error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
+    console.warn('[trigger-evening-summary] Skipped — database not configured.');
+    return res.json({ success: false, count: 0, error: 'Database is not configured (TURSO_DATABASE_URL/TURSO_AUTH_TOKEN missing)' });
   }
 
   const date = todayISO();
 
-  let users;
+  // Fallback to an empty list rather than failing the whole request: a
+  // transient/misconfigured statuses lookup (e.g. the 404 seen in Render's
+  // logs) should mean "nobody got a summary this run", not "the endpoint is
+  // down". NOTE: the "HTTP error! status: 404" that shows up here is thrown
+  // inside db.getAllStatusForDate() itself (in database.js, not this file)
+  // — that function is fetching a URL/route that no longer exists. This
+  // try/catch stops it from taking the endpoint down, but the fetch call
+  // inside getAllStatusForDate still needs its URL corrected at the source
+  // to actually send anyone their summary again.
+  let users = [];
   try {
     users = await db.getAllStatusForDate(date);
   } catch (err) {
-    console.error('[trigger-evening-summary] failed to load statuses:', err.message);
-    return res.status(502).json({ error: 'Failed to load user statuses' });
+    // database.js's runTursoQuery() already logs the detailed Turso-side
+    // error (name/code/status/cause) right before this rethrows — this
+    // line just confirms, at the endpoint level, that the request fell
+    // back to an empty list rather than failing silently.
+    console.error('[trigger-evening-summary] failed to load statuses, continuing with an empty list:', err.message);
+    users = [];
   }
 
   let sentCount = 0;
@@ -742,7 +762,18 @@ app.get('/api/trigger-evening-summary', async (req, res) => {
     }
   }
 
-  res.json({ success: true, count: sentCount, message: `Summaries sent to ${sentCount} users` });
+  // Always a 200 with a valid JSON body — success reflects whether we
+  // actually had statuses to work with, not just "the HTTP call didn't
+  // throw", so callers can tell "ran, nobody due" apart from "ran, silently
+  // found nobody because the DB lookup failed".
+  res.json({
+    success: users.length > 0 || sentCount > 0,
+    count: sentCount,
+    usersFound: users.length,
+    message: users.length > 0
+      ? `Summaries sent to ${sentCount} of ${users.length} users`
+      : 'No user statuses could be loaded for today — sent to 0 users',
+  });
 });
 
 // ---------------------------------------------------------------------------
