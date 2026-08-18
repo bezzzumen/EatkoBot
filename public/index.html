@@ -72,7 +72,7 @@
 
   /* Global font enforcement — Plus Jakarta Sans everywhere, including
      buttons, cards, and headings, overriding any inherited UA/system font. */
-  *, body, button, input, h1, h2, h3, .glass, .cat-card, .streak-badge, .analytics-btn {
+  *, body, button, input, h1, h2, h3, .glass, .cat-card, .analytics-btn {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
   }
 
@@ -117,70 +117,59 @@
 
   /* ===== HEADER ===== */
 
-  header { padding: 20px 16px 8px; }
+  header { padding: 16px 16px 6px; }
 
   .top-row {
     display: flex;
     justify-content: center;
     align-items: center;
-    margin-bottom: 14px;
+    margin-bottom: 10px;
   }
   .brand { display: flex; align-items: center; gap: 8px; text-align: center; }
-  .brand h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+  .brand h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; display: flex; align-items: center; justify-content: center; gap: 7px; }
   .date-pill { font-size: 11.5px; color: var(--tg-hint); font-weight: 500; margin-top: 1px; }
 
-  .streak-row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 10px; margin-bottom: 14px;
+  /* Compact streak indicator, inline with the app name in the header —
+     replaces the old standalone pulsing streak button entirely. */
+  .streak-inline {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 13px; font-weight: 800; color: #fdba74;
+    letter-spacing: 0;
   }
-  .streak-badge {
-    display: flex; align-items: center; gap: 7px;
-    padding: 8px 14px; border-radius: var(--radius-pill);
-    background: rgba(251, 146, 60, 0.14);
-    -webkit-backdrop-filter: blur(20px);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(251, 146, 60, 0.38);
-    box-shadow: 0 0 16px rgba(251, 146, 60, 0.28), var(--glass-inset);
-    animation: streak-pulse 2.4s ease-in-out infinite;
+  .streak-inline.zero { color: var(--tg-hint); }
+
+  .action-row {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px; margin-bottom: 12px;
   }
-  .streak-badge.zero {
-    background: var(--glass-bg-strong);
-    border: 1px solid var(--glass-border);
-    box-shadow: var(--glass-inset);
-    animation: none;
-  }
-  @keyframes streak-pulse {
-    0%, 100% { box-shadow: 0 0 16px rgba(251, 146, 60, 0.28), var(--glass-inset); }
-    50% { box-shadow: 0 0 24px rgba(251, 146, 60, 0.48), var(--glass-inset); }
-  }
-  /* Streak badge now sits below the week checkmarks as a passive status
-     indicator rather than a top-row action button — centered, with a
-     little breathing room from the checkmark row above it. */
-  .streak-indicator-row {
-    display: flex; justify-content: center;
-    margin-top: 12px;
-  }
-  .streak-badge .flame { font-size: 15px; }
-  .streak-badge .streak-text {
-    font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
-    color: #fdba74;
-  }
-  .streak-badge.zero .streak-text { color: var(--tg-hint); }
 
   .analytics-btn {
-    display: flex; align-items: center; gap: 6px;
-    padding: 8px 14px; border-radius: var(--radius-pill);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 10px; border-radius: var(--radius-pill);
     background: var(--glass-bg-strong);
     -webkit-backdrop-filter: blur(20px);
     backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
     box-shadow: var(--glass-inset);
     color: var(--tg-text);
-    font-size: 12px; font-weight: 700;
+    font-size: 11.5px; font-weight: 700;
     cursor: pointer;
-    transition: transform 0.15s ease;
+    transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+    white-space: nowrap;
   }
   .analytics-btn:active { transform: scale(0.95); }
+  /* Warm "needs attention" state — reused by the Вага button when no
+     weight has been logged this week, matching the old weight-pill nudge. */
+  .analytics-btn.prompt {
+    background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.38);
+    color: #fde68a;
+    animation: weight-prompt-pulse 2.4s ease-in-out infinite;
+  }
+  [data-theme="light"] .analytics-btn.prompt { color: #92400e; }
+  @keyframes weight-prompt-pulse {
+    0%, 100% { box-shadow: 0 0 0 rgba(251,191,36,0); }
+    50% { box-shadow: 0 0 14px rgba(251,191,36,0.45); }
+  }
 
   .week-row {
     display: flex; justify-content: space-between; gap: 6px;
@@ -188,18 +177,18 @@
   }
   .week-day {
     position: relative;
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 7px;
-    padding: 8px 0 9px;
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px;
+    padding: 6px 0 7px;
     border-radius: var(--radius-pill);
     background: transparent;
     border: 1px solid transparent;
     transition: background 0.3s ease, border-color 0.3s ease;
   }
-  .week-day .week-label { font-size: 10px; font-weight: 700; color: var(--tg-hint); text-transform: uppercase; letter-spacing: 0.04em; }
+  .week-day .week-label { font-size: 9px; font-weight: 700; color: var(--tg-hint); text-transform: uppercase; letter-spacing: 0.04em; }
   .week-day .week-chip {
-    width: 30px; height: 30px; border-radius: 50%;
+    width: 25px; height: 25px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
+    font-size: 12px;
     background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
     transition: all 0.3s ease;
   }
@@ -250,11 +239,11 @@
 
 
   .hero-card {
-    padding: 22px 18px 20px;
+    padding: 18px 18px 14px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 18px;
+    gap: 12px;
     position: relative;
     overflow: hidden;
     width: 100%;
@@ -278,10 +267,14 @@
     pointer-events: none;
   }
 
-  .ring-wrap { position: relative; width: 176px; height: 176px; }
+  /* Ring shrunk from 176px so the whole hero card fits in a much smaller
+     vertical footprint — the SVG viewBox/circle math is untouched (still
+     176 user units, r=74), so this is a pure CSS scale-down and the JS
+     stroke-dashoffset circumference calculation stays valid unchanged. */
+  .ring-wrap { position: relative; width: 132px; height: 132px; }
   .ring-wrap::before {
     content: '';
-    position: absolute; inset: -22px;
+    position: absolute; inset: -16px;
     background: radial-gradient(circle, rgba(99,102,241,0.22), transparent 68%);
     filter: blur(18px);
     z-index: 0;
@@ -306,48 +299,20 @@
   }
   .ring-center .kcal-value {
     font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 32px; font-weight: 800; line-height: 1; letter-spacing: -0.03em;
+    font-size: 25px; font-weight: 800; line-height: 1; letter-spacing: -0.03em;
     font-variant-numeric: tabular-nums;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  .ring-center .kcal-target { font-size: 12px; color: var(--tg-hint); margin-top: 5px; font-weight: 500; }
-  .ring-center .kcal-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; font-weight: 600; }
-
-  /* Main-screen weight widget — a small pill between the calorie ring and
-     the macro rows. Two states: filled (shows this week's kg + trend vs
-     last week) and "prompt" (no entry yet this week — warm/amber accent
-     to invite a tap, matching the streak badge's own pulse pattern). */
-  .weight-pill {
-    display: flex; align-items: center; gap: 7px;
-    padding: 8px 16px; border-radius: var(--radius-pill);
-    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
-    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-    color: var(--tg-text); font-size: 12.5px; font-weight: 700;
-    cursor: pointer; z-index: 2;
-    transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
-  }
-  .weight-pill:active { transform: scale(0.95); }
-  .weight-pill .weight-icon { font-size: 13px; }
-  .weight-pill .weight-trend.down { color: var(--success); }
-  .weight-pill .weight-trend.up { color: var(--danger); }
-  .weight-pill.prompt {
-    background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.38);
-    color: #fde68a;
-    animation: weight-prompt-pulse 2.4s ease-in-out infinite;
-  }
-  [data-theme="light"] .weight-pill.prompt { color: #92400e; }
-  @keyframes weight-prompt-pulse {
-    0%, 100% { box-shadow: 0 0 0 rgba(251,191,36,0); }
-    50% { box-shadow: 0 0 14px rgba(251,191,36,0.45); }
-  }
+  .ring-center .kcal-target { font-size: 10.5px; color: var(--tg-hint); margin-top: 4px; font-weight: 500; }
+  .ring-center .kcal-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; font-weight: 600; }
 
   .macros-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; z-index: 2; }
-  .macro { display: flex; flex-direction: column; gap: 6px; }
-  .macro .macro-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; }
+  .macro { display: flex; flex-direction: column; gap: 5px; }
+  .macro .macro-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 10.5px; }
   .macro .macro-name { color: var(--tg-hint); font-weight: 600; }
-  .macro .macro-val { font-weight: 700; font-size: 11.5px; }
-  .macro-track { height: 6px; border-radius: var(--radius-pill); background: var(--glass-bg); overflow: hidden; }
+  .macro .macro-val { font-weight: 700; font-size: 11px; }
+  .macro-track { height: 5px; border-radius: var(--radius-pill); background: var(--glass-bg); overflow: hidden; }
   .macro-fill { height: 100%; border-radius: var(--radius-pill); width: 0%; transition: width 0.6s cubic-bezier(.2,.8,.2,1); }
   .macro-fill.protein { background: linear-gradient(90deg, var(--protein-1), var(--protein-2)); box-shadow: 0 0 8px rgba(52,211,153,0.5); }
   .macro-fill.fat { background: linear-gradient(90deg, var(--fat-1), var(--fat-2)); box-shadow: 0 0 8px rgba(251,191,36,0.5); }
@@ -894,14 +859,15 @@
   <div class="top-row">
     <div class="brand">
       <div>
-        <h1>Eatko</h1>
+        <h1>Eatko <span class="streak-inline" id="streakInline">🔥 0</span></h1>
         <div class="date-pill" id="dateLabel"></div>
       </div>
     </div>
   </div>
 
-  <div class="streak-row">
+  <div class="action-row">
     <button class="analytics-btn" id="calcBtn">🧮 Калькулятор</button>
+    <button class="analytics-btn" id="weightBtn" aria-label="Вага">⚖️ Вага</button>
     <button class="analytics-btn" id="analyticsBtn">📊 Статистика</button>
   </div>
 
@@ -917,12 +883,6 @@
         <div class="kcal-label" id="kcalStatusLabel">залишок</div>
       </div>
     </div>
-
-    <button class="weight-pill" id="weightBtn" aria-label="Вага">
-      <span class="weight-icon">⚖️</span>
-      <span class="weight-text mono" id="weightPillText">…</span>
-      <span class="weight-trend mono" id="weightPillTrend"></span>
-    </button>
 
     <div class="macros-row">
       <div class="macro">
@@ -940,13 +900,6 @@
     </div>
 
     <div class="week-row" id="weekRow"></div>
-
-    <div class="streak-indicator-row">
-      <div class="streak-badge" id="streakBadge">
-        <span class="flame">🔥</span>
-        <span class="streak-text" id="streakText">0 ДНІВ ПОСПІЛЬ</span>
-      </div>
-    </div>
   </div>
 </header>
 
