@@ -153,6 +153,13 @@
     0%, 100% { box-shadow: 0 0 16px rgba(251, 146, 60, 0.28), var(--glass-inset); }
     50% { box-shadow: 0 0 24px rgba(251, 146, 60, 0.48), var(--glass-inset); }
   }
+  /* Streak badge now sits below the week checkmarks as a passive status
+     indicator rather than a top-row action button — centered, with a
+     little breathing room from the checkmark row above it. */
+  .streak-indicator-row {
+    display: flex; justify-content: center;
+    margin-top: 12px;
+  }
   .streak-badge .flame { font-size: 15px; }
   .streak-badge .streak-text {
     font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
@@ -546,6 +553,22 @@
   .preview-line { text-align: center; font-size: 12.5px; color: var(--tg-hint); padding-bottom: 6px; font-weight: 500; }
   .preview-line b { color: var(--tg-text); }
 
+  /* ===== КБЖУ CALCULATOR ===== */
+  .calc-result {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 16px; margin: 4px 0 16px; border-radius: 16px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .calc-result .calc-result-value {
+    font-size: 30px; font-weight: 800; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .calc-result .calc-result-label {
+    font-size: 11px; color: var(--tg-hint); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+
   .sheet-footer { padding: 12px 18px 4px; }
   .confirm-btn {
     width: 100%; padding: 15px; border: none; border-radius: 16px;
@@ -878,10 +901,7 @@
   </div>
 
   <div class="streak-row">
-    <div class="streak-badge" id="streakBadge">
-      <span class="flame">🔥</span>
-      <span class="streak-text" id="streakText">0 ДНІВ ПОСПІЛЬ</span>
-    </div>
+    <button class="analytics-btn" id="calcBtn">🧮 Калькулятор</button>
     <button class="analytics-btn" id="analyticsBtn">📊 Статистика</button>
   </div>
 
@@ -920,6 +940,13 @@
     </div>
 
     <div class="week-row" id="weekRow"></div>
+
+    <div class="streak-indicator-row">
+      <div class="streak-badge" id="streakBadge">
+        <span class="flame">🔥</span>
+        <span class="streak-text" id="streakText">0 ДНІВ ПОСПІЛЬ</span>
+      </div>
+    </div>
   </div>
 </header>
 
