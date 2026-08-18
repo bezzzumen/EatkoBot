@@ -126,10 +126,35 @@ function isDatabaseConfigured() {
   return !!turso;
 }
 
+// Thin wrapper around every turso.execute() call in this file. It changes
+// NOTHING about control flow — same args in, same result or thrown error
+// out — it only logs the full error detail before rethrowing, so whoever
+// catches it upstream (server.js currently only logs err.message) can see
+// exactly what Turso actually returned: err.name/code/status distinguish a
+// genuine SQL problem (e.g. "no such table") from an HTTP-transport failure
+// (e.g. a 404 from the request never reaching a valid endpoint) from a
+// network-level failure (err.cause, for a fetch() that never got a response
+// at all) — three very different problems that otherwise all look similar
+// as just "some Error with a message" further up the call stack.
+// `context` is a short label (e.g. "getAllStatusForDate") so the log line
+// says which query failed without needing to match it up to a line number.
+async function runTursoQuery(context, sql, args) {
+  try {
+    return args === undefined ? await turso.execute(sql) : await turso.execute({ sql, args });
+  } catch (err) {
+    console.error(`[turso] "${context}" failed: ${err?.message}`);
+    if (err?.name) console.error(`[turso]   name: ${err.name}`);
+    if (err?.code) console.error(`[turso]   code: ${err.code}`);
+    if (err?.status !== undefined) console.error(`[turso]   status: ${err.status}`);
+    if (err?.cause) console.error('[turso]   cause:', err.cause);
+    throw err;
+  }
+}
+
 async function ensureSchema() {
   if (!turso) return;
 
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: users', `
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       telegram_id TEXT UNIQUE NOT NULL,
@@ -141,7 +166,7 @@ async function ensureSchema() {
 
   // One row per (user, date) — a snapshot of that day's totals, upserted
   // every time the client syncs. Only the latest snapshot per day is kept.
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: daily_status', `
     CREATE TABLE IF NOT EXISTS daily_status (
       id                   INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -158,7 +183,7 @@ async function ensureSchema() {
   // The invite-code allowlist. Kept deliberately separate from `users`
   // above (which just tracks "anyone who's ever synced data") — this is
   // specifically "who is permitted to use the app at all".
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: allowed_users', `
     CREATE TABLE IF NOT EXISTS allowed_users (
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
       telegram_id    TEXT UNIQUE NOT NULL,
@@ -168,7 +193,7 @@ async function ensureSchema() {
     )
   `);
 
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: invite_codes', `
     CREATE TABLE IF NOT EXISTS invite_codes (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
       code                TEXT UNIQUE NOT NULL,
@@ -183,7 +208,7 @@ async function ensureSchema() {
   // so repeat-avoidance can be genuinely per-user and survive server
   // restarts — an in-memory-only, all-users-shared history (the previous
   // approach) neither of those things.
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: sent_predictions', `
     CREATE TABLE IF NOT EXISTS sent_predictions (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -192,7 +217,7 @@ async function ensureSchema() {
       sent_at     TEXT DEFAULT (datetime('now'))
     )
   `);
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: idx_sent_predictions_user', `
     CREATE INDEX IF NOT EXISTS idx_sent_predictions_user ON sent_predictions(user_id, kind, sent_at)
   `);
 
@@ -200,7 +225,7 @@ async function ensureSchema() {
   // week (Europe/Kyiv), computed server-side, never trusted from the
   // client. Upserted on save, so re-entering a value for the same week
   // just overwrites it rather than creating a duplicate.
-  await turso.execute(`
+  await runTursoQuery('ensureSchema: weekly_weight', `
     CREATE TABLE IF NOT EXISTS weekly_weight (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -215,24 +240,27 @@ async function ensureSchema() {
 async function getOrCreateUser({ telegram_id, first_name, username }) {
   if (!turso) throw new Error('Database not configured');
 
-  const existing = await turso.execute({
-    sql: 'SELECT id, first_name, username FROM users WHERE telegram_id = ?',
-    args: [String(telegram_id)],
-  });
+  const existing = await runTursoQuery(
+    'getOrCreateUser: select',
+    'SELECT id, first_name, username FROM users WHERE telegram_id = ?',
+    [String(telegram_id)]
+  );
 
   if (existing.rows.length) {
     const row = existing.rows[0];
-    await turso.execute({
-      sql: 'UPDATE users SET first_name = ?, username = ? WHERE id = ?',
-      args: [first_name || row.first_name || null, username || row.username || null, row.id],
-    });
+    await runTursoQuery(
+      'getOrCreateUser: update',
+      'UPDATE users SET first_name = ?, username = ? WHERE id = ?',
+      [first_name || row.first_name || null, username || row.username || null, row.id]
+    );
     return Number(row.id);
   }
 
-  const info = await turso.execute({
-    sql: 'INSERT INTO users (telegram_id, first_name, username) VALUES (?, ?, ?)',
-    args: [String(telegram_id), first_name || null, username || null],
-  });
+  const info = await runTursoQuery(
+    'getOrCreateUser: insert',
+    'INSERT INTO users (telegram_id, first_name, username) VALUES (?, ?, ?)',
+    [String(telegram_id), first_name || null, username || null]
+  );
   return Number(info.lastInsertRowid);
 }
 
@@ -241,8 +269,9 @@ async function getOrCreateUser({ telegram_id, first_name, username }) {
 async function upsertDailyStatus(userId, date, { total_calories, daily_calorie_target, streak, categories }) {
   if (!turso) throw new Error('Database not configured');
 
-  await turso.execute({
-    sql: `
+  await runTursoQuery(
+    'upsertDailyStatus',
+    `
       INSERT INTO daily_status (user_id, log_date, total_calories, daily_calorie_target, streak, categories_json, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(user_id, log_date) DO UPDATE SET
@@ -252,8 +281,8 @@ async function upsertDailyStatus(userId, date, { total_calories, daily_calorie_t
         categories_json = excluded.categories_json,
         updated_at = datetime('now')
     `,
-    args: [userId, date, total_calories, daily_calorie_target, streak || 0, JSON.stringify(categories || [])],
-  });
+    [userId, date, total_calories, daily_calorie_target, streak || 0, JSON.stringify(categories || [])]
+  );
 }
 
 // Every user's synced status for a given date — what the evening broadcast
@@ -262,15 +291,16 @@ async function upsertDailyStatus(userId, date, { total_calories, daily_calorie_t
 async function getAllStatusForDate(date) {
   if (!turso) return [];
 
-  const result = await turso.execute({
-    sql: `
+  const result = await runTursoQuery(
+    'getAllStatusForDate',
+    `
       SELECT u.id AS user_id, u.telegram_id, u.first_name, d.total_calories, d.daily_calorie_target, d.streak, d.categories_json
       FROM daily_status d
       JOIN users u ON u.id = d.user_id
       WHERE d.log_date = ?
     `,
-    args: [date],
-  });
+    [date]
+  );
 
   return result.rows.map((row) => ({
     user_id: row.user_id,
@@ -297,25 +327,28 @@ async function isUserAllowed({ telegram_id, first_name, username }) {
   if (!turso) return false;
   const tgId = String(telegram_id);
 
-  const allowed = await turso.execute({
-    sql: 'SELECT 1 FROM allowed_users WHERE telegram_id = ?',
-    args: [tgId],
-  });
+  const allowed = await runTursoQuery(
+    'isUserAllowed: select allowed_users',
+    'SELECT 1 FROM allowed_users WHERE telegram_id = ?',
+    [tgId]
+  );
   if (allowed.rows.length) return true;
 
-  const usedCode = await turso.execute({
-    sql: 'SELECT 1 FROM invite_codes WHERE is_used = 1 AND used_by_telegram_id = ?',
-    args: [tgId],
-  });
+  const usedCode = await runTursoQuery(
+    'isUserAllowed: select invite_codes',
+    'SELECT 1 FROM invite_codes WHERE is_used = 1 AND used_by_telegram_id = ?',
+    [tgId]
+  );
   if (usedCode.rows.length) {
-    await turso.execute({
-      sql: `
+    await runTursoQuery(
+      'isUserAllowed: backfill allowed_users',
+      `
         INSERT INTO allowed_users (telegram_id, first_name, username)
         VALUES (?, ?, ?)
         ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
       `,
-      args: [tgId, first_name || null, username || null],
-    });
+      [tgId, first_name || null, username || null]
+    );
     return true;
   }
 
@@ -341,10 +374,7 @@ async function generateInviteCode() {
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = generateCodeString();
     try {
-      await turso.execute({
-        sql: 'INSERT INTO invite_codes (code) VALUES (?)',
-        args: [code],
-      });
+      await runTursoQuery('generateInviteCode: insert', 'INSERT INTO invite_codes (code) VALUES (?)', [code]);
       return code;
     } catch (err) {
       if (attempt === 4) throw err; // give up after a few collisions
@@ -367,10 +397,11 @@ async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, usern
   const normalized = String(code || '').trim().toUpperCase();
   if (!normalized) return { ok: false, reason: 'Введіть код запрошення.' };
 
-  const existing = await turso.execute({
-    sql: 'SELECT id, is_used, used_by_telegram_id FROM invite_codes WHERE code = ?',
-    args: [normalized],
-  });
+  const existing = await runTursoQuery(
+    'verifyAndConsumeInviteCode: select',
+    'SELECT id, is_used, used_by_telegram_id FROM invite_codes WHERE code = ?',
+    [normalized]
+  );
 
   if (!existing.rows.length) {
     return { ok: false, reason: 'Невірний код запрошення.' };
@@ -386,32 +417,35 @@ async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, usern
     // Same person, re-submitting a code they already used — log them in
     // (and make sure allowed_users actually has them, in case that half of
     // the original write never completed).
-    await turso.execute({
-      sql: `
+    await runTursoQuery(
+      'verifyAndConsumeInviteCode: re-login backfill',
+      `
         INSERT INTO allowed_users (telegram_id, first_name, username)
         VALUES (?, ?, ?)
         ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
       `,
-      args: [String(telegram_id), first_name || null, username || null],
-    });
+      [String(telegram_id), first_name || null, username || null]
+    );
     return { ok: true };
   }
 
   const codeId = row.id;
 
-  await turso.execute({
-    sql: `UPDATE invite_codes SET is_used = 1, used_by_telegram_id = ?, used_at = datetime('now') WHERE id = ?`,
-    args: [String(telegram_id), codeId],
-  });
+  await runTursoQuery(
+    'verifyAndConsumeInviteCode: mark used',
+    `UPDATE invite_codes SET is_used = 1, used_by_telegram_id = ?, used_at = datetime('now') WHERE id = ?`,
+    [String(telegram_id), codeId]
+  );
 
-  await turso.execute({
-    sql: `
+  await runTursoQuery(
+    'verifyAndConsumeInviteCode: insert allowed_users',
+    `
       INSERT INTO allowed_users (telegram_id, first_name, username)
       VALUES (?, ?, ?)
       ON CONFLICT(telegram_id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username
     `,
-    args: [String(telegram_id), first_name || null, username || null],
-  });
+    [String(telegram_id), first_name || null, username || null]
+  );
 
   return { ok: true };
 }
@@ -426,22 +460,24 @@ async function verifyAndConsumeInviteCode(code, { telegram_id, first_name, usern
 // pool down to lines this user hasn't seen lately.
 async function getRecentPredictions(userId, kind, lookbackDays) {
   if (!turso) return [];
-  const result = await turso.execute({
-    sql: `
+  const result = await runTursoQuery(
+    'getRecentPredictions',
+    `
       SELECT prediction FROM sent_predictions
       WHERE user_id = ? AND kind = ? AND sent_at >= datetime('now', ?)
     `,
-    args: [userId, kind, `-${lookbackDays} days`],
-  });
+    [userId, kind, `-${lookbackDays} days`]
+  );
   return result.rows.map((row) => row.prediction);
 }
 
 async function recordSentPrediction(userId, kind, prediction) {
   if (!turso) return;
-  await turso.execute({
-    sql: 'INSERT INTO sent_predictions (user_id, kind, prediction) VALUES (?, ?, ?)',
-    args: [userId, kind, prediction],
-  });
+  await runTursoQuery(
+    'recordSentPrediction',
+    'INSERT INTO sent_predictions (user_id, kind, prediction) VALUES (?, ?, ?)',
+    [userId, kind, prediction]
+  );
 }
 
 // Called when the static fallback pool is fully exhausted for this user
@@ -450,10 +486,11 @@ async function recordSentPrediction(userId, kind, prediction) {
 // once we're intentionally cycling back through the same finite pool.
 async function resetUserPredictionHistory(userId, kind) {
   if (!turso) return;
-  await turso.execute({
-    sql: 'DELETE FROM sent_predictions WHERE user_id = ? AND kind = ?',
-    args: [userId, kind],
-  });
+  await runTursoQuery(
+    'resetUserPredictionHistory',
+    'DELETE FROM sent_predictions WHERE user_id = ? AND kind = ?',
+    [userId, kind]
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -465,16 +502,17 @@ async function resetUserPredictionHistory(userId, kind) {
 // write into an arbitrary week via this endpoint.
 async function upsertWeeklyWeight(userId, weekStart, weightKg) {
   if (!turso) throw new Error('Database not configured');
-  await turso.execute({
-    sql: `
+  await runTursoQuery(
+    'upsertWeeklyWeight',
+    `
       INSERT INTO weekly_weight (user_id, week_start, weight_kg, updated_at)
       VALUES (?, ?, ?, datetime('now'))
       ON CONFLICT(user_id, week_start) DO UPDATE SET
         weight_kg = excluded.weight_kg,
         updated_at = datetime('now')
     `,
-    args: [userId, weekStart, weightKg],
-  });
+    [userId, weekStart, weightKg]
+  );
 }
 
 // Most recent `limit` weeks with an entry, newest first. Deliberately NOT
@@ -484,15 +522,16 @@ async function upsertWeeklyWeight(userId, weekStart, weightKg) {
 // by comparing week_start values, not by assuming adjacency.
 async function getRecentWeeklyWeights(userId, limit = 8) {
   if (!turso) return [];
-  const result = await turso.execute({
-    sql: `
+  const result = await runTursoQuery(
+    'getRecentWeeklyWeights',
+    `
       SELECT week_start, weight_kg FROM weekly_weight
       WHERE user_id = ?
       ORDER BY week_start DESC
       LIMIT ?
     `,
-    args: [userId, limit],
-  });
+    [userId, limit]
+  );
   return result.rows.map((row) => ({ week_start: row.week_start, weight_kg: row.weight_kg }));
 }
 
@@ -501,7 +540,7 @@ async function getRecentWeeklyWeights(userId, limit = 8) {
 // reach people who haven't yet).
 async function getAllAllowedTelegramIds() {
   if (!turso) return [];
-  const result = await turso.execute('SELECT telegram_id FROM allowed_users');
+  const result = await runTursoQuery('getAllAllowedTelegramIds', 'SELECT telegram_id FROM allowed_users');
   return result.rows.map((row) => row.telegram_id);
 }
 
