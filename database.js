@@ -221,9 +221,28 @@ async function ensureSchema() {
       telegram_id TEXT UNIQUE NOT NULL,
       first_name TEXT,
       username TEXT,
+      daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET},
       created_at TEXT DEFAULT (datetime('now'))
     )
   `);
+
+  // Existing deployments created `users` before daily_target existed, so
+  // CREATE TABLE IF NOT EXISTS above is a no-op for them and never adds the
+  // column. This backfills it on those installs. On a fresh install the
+  // column already exists from the CREATE TABLE above, so this always fails
+  // with "duplicate column name" there — expected, and safely ignored. Any
+  // OTHER error still throws, since that would mean something genuinely
+  // unexpected went wrong.
+  try {
+    await runTursoQuery(
+      'ensureSchema: users.daily_target migration',
+      `ALTER TABLE users ADD COLUMN daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`
+    );
+  } catch (err) {
+    if (!/duplicate column name/i.test(err?.message || '')) {
+      throw err;
+    }
+  }
 
   // One row per (user, date) — a snapshot of that day's totals, upserted
   // every time the client syncs. Only the latest snapshot per day is kept.
@@ -323,6 +342,33 @@ async function getOrCreateUser({ telegram_id, first_name, username }) {
     [String(telegram_id), first_name || null, username || null]
   );
   return Number(info.lastInsertRowid);
+}
+
+// This user's custom daily calorie target, or the app-wide default
+// (DAILY_CALORIE_TARGET, 2220) if they've never set one — covers both a
+// NULL/missing column value on rows created before daily_target existed
+// and simply not having called POST /api/user/settings yet.
+async function getUserDailyTarget(userId) {
+  if (!turso) return DAILY_CALORIE_TARGET;
+
+  const result = await runTursoQuery(
+    'getUserDailyTarget',
+    'SELECT daily_target FROM users WHERE id = ?',
+    [userId]
+  );
+  const value = result.rows[0]?.daily_target;
+  return value == null ? DAILY_CALORIE_TARGET : Number(value);
+}
+
+// Updates this user's daily_target. Range/type validation happens in
+// server.js at the HTTP layer — this just persists whatever it's given.
+async function updateUserDailyTarget(userId, dailyTarget) {
+  if (!turso) throw new Error('Database not configured');
+  await runTursoQuery(
+    'updateUserDailyTarget',
+    'UPDATE users SET daily_target = ? WHERE id = ?',
+    [dailyTarget, userId]
+  );
 }
 
 // Upserts today's (or any date's) computed status for a user. Called by
@@ -614,6 +660,8 @@ module.exports = {
   isDatabaseConfigured,
   ensureSchema,
   getOrCreateUser,
+  getUserDailyTarget,
+  updateUserDailyTarget,
   upsertDailyStatus,
   getAllStatusForDate,
   isUserAllowed,
