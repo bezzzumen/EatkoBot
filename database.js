@@ -111,9 +111,17 @@ const { createClient } = require('@tursodatabase/serverless/compat');
 const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
 
+// Wrapped in a function (rather than a one-off inline call) so a fresh
+// client can be spun up on demand — see recreateTursoClient() below, used
+// when a query fails in a way that suggests the underlying HTTP/WebSocket
+// connection state was lost rather than the query itself being bad.
+function createTursoClient() {
+  return createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+}
+
 let turso = null;
 if (TURSO_DATABASE_URL && TURSO_AUTH_TOKEN) {
-  turso = createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+  turso = createTursoClient();
 } else {
   console.warn(
     '\n[!] TURSO_DATABASE_URL / TURSO_AUTH_TOKEN not set — daily status sync ' +
@@ -126,29 +134,82 @@ function isDatabaseConfigured() {
   return !!turso;
 }
 
-// Thin wrapper around every turso.execute() call in this file. It changes
-// NOTHING about control flow — same args in, same result or thrown error
-// out — it only logs the full error detail before rethrowing, so whoever
-// catches it upstream (server.js currently only logs err.message) can see
-// exactly what Turso actually returned: err.name/code/status distinguish a
-// genuine SQL problem (e.g. "no such table") from an HTTP-transport failure
-// (e.g. a 404 from the request never reaching a valid endpoint) from a
-// network-level failure (err.cause, for a fetch() that never got a response
-// at all) — three very different problems that otherwise all look similar
-// as just "some Error with a message" further up the call stack.
+// Recreates the module-level `turso` client in place. Used as a retry
+// escape hatch: if a query fails with a transport-level error, the client's
+// underlying HTTP/WebSocket connection state may be stale (e.g. after the
+// Turso DB auto-paused and cold-started, or a network blip), and simply
+// retrying against the SAME client instance can keep failing the same way.
+// Recreating gives the retry a clean connection to work with. No-op if
+// Turso was never configured (nothing to recreate).
+function recreateTursoClient() {
+  if (!TURSO_DATABASE_URL || !TURSO_AUTH_TOKEN) return;
+  try {
+    turso = createTursoClient();
+  } catch (err) {
+    console.error(`[turso] failed to recreate client: ${err?.message}`);
+  }
+}
+
+const TURSO_RETRY_MAX_ATTEMPTS = 3; // 1 initial attempt + 2 retries
+const TURSO_RETRY_DELAY_MS = 1500;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Whether an error is worth retrying: a 404 HTTP-transport failure (the
+// Turso DB was auto-paused and the request landed before it finished
+// cold-starting back up) or a network-level failure (err.cause set, for a
+// fetch() that never got a response at all). A genuine SQL/application
+// error (bad syntax, missing table, constraint violation, auth failure)
+// will fail identically on retry, so those are NOT retried — no point
+// waiting 1.5s twice just to get the same real error a third time.
+function isRetryableTursoError(err) {
+  if (!err) return false;
+  if (err.status === 404) return true;
+  if (err.cause) return true; // network-level failure below the HTTP layer
+  const message = String(err.message || '');
+  return /HTTP error! status: 404/i.test(message) || /fetch failed/i.test(message);
+}
+
+// Thin wrapper around every turso.execute() call in this file. On top of
+// the original behavior (log full error detail, then rethrow so callers
+// see the same error they always did), it now also retries: if the query
+// fails with a 404 or network-level error, wait 1.5s and try again, up to
+// 2 retries (3 attempts total), recreating the client before each retry.
+// This specifically handles Turso database cold-starts when auto-paused —
+// the first request after a pause can 404 before the DB has finished
+// waking up, and a short wait plus retry is usually enough for it to
+// succeed. Non-retryable errors (real SQL problems) still throw
+// immediately on the first attempt, unchanged from before.
 // `context` is a short label (e.g. "getAllStatusForDate") so the log line
 // says which query failed without needing to match it up to a line number.
 async function runTursoQuery(context, sql, args) {
-  try {
-    return args === undefined ? await turso.execute(sql) : await turso.execute({ sql, args });
-  } catch (err) {
-    console.error(`[turso] "${context}" failed: ${err?.message}`);
-    if (err?.name) console.error(`[turso]   name: ${err.name}`);
-    if (err?.code) console.error(`[turso]   code: ${err.code}`);
-    if (err?.status !== undefined) console.error(`[turso]   status: ${err.status}`);
-    if (err?.cause) console.error('[turso]   cause:', err.cause);
-    throw err;
+  let lastErr;
+  for (let attempt = 1; attempt <= TURSO_RETRY_MAX_ATTEMPTS; attempt++) {
+    try {
+      return args === undefined ? await turso.execute(sql) : await turso.execute({ sql, args });
+    } catch (err) {
+      lastErr = err;
+      console.error(`[turso] "${context}" failed (attempt ${attempt}/${TURSO_RETRY_MAX_ATTEMPTS}): ${err?.message}`);
+      if (err?.name) console.error(`[turso]   name: ${err.name}`);
+      if (err?.code) console.error(`[turso]   code: ${err.code}`);
+      if (err?.status !== undefined) console.error(`[turso]   status: ${err.status}`);
+      if (err?.cause) console.error('[turso]   cause:', err.cause);
+
+      const isLastAttempt = attempt === TURSO_RETRY_MAX_ATTEMPTS;
+      if (isLastAttempt || !isRetryableTursoError(err)) {
+        throw err;
+      }
+
+      console.warn(`[turso] "${context}" — retrying in ${TURSO_RETRY_DELAY_MS}ms (likely a cold-start 404)...`);
+      await sleep(TURSO_RETRY_DELAY_MS);
+      recreateTursoClient();
+    }
   }
+  // Unreachable (the loop always either returns or throws above), but keeps
+  // control flow explicit rather than implicitly returning undefined.
+  throw lastErr;
 }
 
 async function ensureSchema() {
