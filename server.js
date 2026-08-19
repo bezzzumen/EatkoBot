@@ -512,7 +512,21 @@ app.get('/api/check-auth', async (req, res) => {
       first_name: tgUser.first_name,
       username: tgUser.username,
     });
-    res.json({ authorized });
+    if (!authorized) {
+      return res.json({ authorized: false });
+    }
+
+    // Authorized — also hand back this user's daily_target here, since
+    // this endpoint is what the client already calls on every app open.
+    // Falls back to the app-wide default (2220) inside getUserDailyTarget
+    // for anyone who hasn't set a custom one via POST /api/user/settings.
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const daily_target = await db.getUserDailyTarget(userId);
+    res.json({ authorized: true, daily_target });
   } catch (err) {
     console.error('[check-auth] failed:', err.message);
     res.status(502).json({ error: 'Failed to check authorization' });
@@ -695,6 +709,42 @@ app.post('/api/weight', async (req, res) => {
   } catch (err) {
     console.error('[weight:post] failed:', err.message);
     res.status(502).json({ error: 'Не вдалося зберегти вагу. Спробуйте ще раз.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Per-user settings (currently just the custom daily calorie target)
+// ---------------------------------------------------------------------------
+
+const MIN_DAILY_TARGET = 800;
+const MAX_DAILY_TARGET = 6000;
+
+// Updates this user's daily_target (the base default, DAILY_CALORIE_TARGET,
+// is 2220 — see database.js). Same auth + allowlist check as the weight
+// endpoints above. Whatever is saved here is what GET /api/check-auth
+// returns to the client on the next app open.
+app.post('/api/user/settings', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const dailyTarget = Number(req.body?.daily_target);
+  if (!Number.isInteger(dailyTarget) || dailyTarget < MIN_DAILY_TARGET || dailyTarget > MAX_DAILY_TARGET) {
+    return res.status(400).json({
+      error: `daily_target must be a whole number between ${MIN_DAILY_TARGET} and ${MAX_DAILY_TARGET}`,
+    });
+  }
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    await db.updateUserDailyTarget(userId, dailyTarget);
+    res.json({ daily_target: dailyTarget });
+  } catch (err) {
+    console.error('[user-settings] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося зберегти денну ціль. Спробуйте ще раз.' });
   }
 });
 
