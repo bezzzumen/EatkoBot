@@ -307,6 +307,19 @@
   .ring-center .kcal-target { font-size: 10.5px; color: var(--tg-hint); margin-top: 4px; font-weight: 500; }
   .ring-center .kcal-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; font-weight: 600; }
 
+  /* Tappable wrapper around kcal-target — turns the daily-target number
+     into the entry point for the custom-target editor (see #targetOverlay
+     below), with a small pencil affordance so it reads as editable. */
+  .kcal-target-btn {
+    display: flex; align-items: center; gap: 4px;
+    margin-top: 4px; padding: 3px 9px; border-radius: var(--radius-pill);
+    border: none; background: transparent; cursor: pointer;
+    transition: background 0.2s ease;
+  }
+  .kcal-target-btn:active { background: var(--glass-bg); }
+  .kcal-target-btn .kcal-target { margin-top: 0; }
+  .kcal-target-edit { font-size: 9px; opacity: 0.55; line-height: 1; }
+
   .macros-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; z-index: 2; }
   .macro { display: flex; flex-direction: column; gap: 5px; }
   .macro .macro-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 10.5px; }
@@ -879,7 +892,10 @@
       </svg>
       <div class="ring-center">
         <div class="kcal-value mono" id="kcalValue">0</div>
-        <div class="kcal-target mono" id="kcalTarget">/ 0 ккал</div>
+        <button class="kcal-target-btn" id="kcalTargetBtn" aria-label="Змінити денну ціль">
+          <span class="kcal-target mono" id="kcalTarget">/ 0 ккал</span>
+          <span class="kcal-target-edit">✏️</span>
+        </button>
         <div class="kcal-label" id="kcalStatusLabel">залишок</div>
       </div>
     </div>
@@ -992,6 +1008,37 @@
     </div>
     <div class="sheet-footer">
       <button class="confirm-btn" id="weightSaveBtn">Зберегти вагу</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="targetOverlay">
+  <div class="sheet target-sheet" id="targetSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div class="titlewrap">
+        <div class="sheet-emoji">🎯</div>
+        <div>
+          <h2>Денна ціль</h2>
+          <div class="sub">Усі ліміти масштабуються під це число</div>
+        </div>
+      </div>
+      <button class="sheet-close" id="targetClose">✕</button>
+    </div>
+
+    <div class="sheet-scroll">
+      <div class="custom-input-wrap">
+        <div class="custom-input-label">Ціль на день</div>
+        <div class="custom-input-row">
+          <input type="number" inputmode="numeric" step="10" id="targetInput" placeholder="напр. 2220" />
+          <div class="unit-label">ккал</div>
+        </div>
+        <div class="weight-error" id="targetError"></div>
+      </div>
+      <div class="preview-line" id="targetPreview"></div>
+    </div>
+    <div class="sheet-footer">
+      <button class="confirm-btn" id="targetSaveBtn">Зберегти ціль</button>
     </div>
   </div>
 </div>
