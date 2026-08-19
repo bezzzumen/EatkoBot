@@ -416,6 +416,82 @@ async function fetchCatalog() {
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// Custom daily calorie target — scaling
+// ---------------------------------------------------------------------------
+// GET /api/catalog always returns the same 2220-kcal BASE catalog (the
+// per-category and per-macro limits computed from CATEGORIES_META in
+// database.js) — it has no notion of any individual user's custom target.
+// BASE_CATALOG holds that raw response; CATALOG (used by every other
+// function in this file, unchanged) is always a derived, SCALED copy of
+// it — recomputed by scaleCatalog() below whenever either BASE_CATALOG or
+// userDailyTarget changes.
+
+const DEFAULT_DAILY_TARGET = 2220; // matches DAILY_CALORIE_TARGET in database.js
+const MIN_DAILY_TARGET = 800;
+const MAX_DAILY_TARGET = 6000;
+const DAILY_TARGET_CACHE_KEY = 'eatko_daily_target_v1';
+
+let BASE_CATALOG = null;
+let userDailyTarget = DEFAULT_DAILY_TARGET;
+
+function loadCachedDailyTarget() {
+  try {
+    const raw = localStorage.getItem(DAILY_TARGET_CACHE_KEY);
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+function saveCachedDailyTarget(target) {
+  try { localStorage.setItem(DAILY_TARGET_CACHE_KEY, String(target)); } catch { /* non-fatal */ }
+}
+
+// Scales every calorie-denominated limit in the base catalog by
+// K = target / base.daily_calorie_target, rounding each to a whole number.
+// Works identically for K < 1 (a lower target, e.g. 1800) and K > 1 (a
+// higher one, e.g. 2800) — it's just multiplication either way.
+//
+// Per-item fields (max_grams, and each item's own protein/carbs/fat) are
+// deliberately left untouched: a category's per-gram calorie rate for
+// logging is target_calories / max_grams (see the productKcalPerGram
+// comment further down), so scaling target_calories alone already scales
+// what a full serving "costs" against the new target — no need to also
+// touch max_grams.
+function scaleCatalog(base, target) {
+  if (!base) return base;
+  const k = target / base.daily_calorie_target;
+  return {
+    ...base,
+    daily_calorie_target: target,
+    protein_goal: Math.round(base.protein_goal * k),
+    carbs_goal: Math.round(base.carbs_goal * k),
+    fat_goal: Math.round(base.fat_goal * k),
+    categories: base.categories.map((cat) => ({
+      ...cat,
+      target_calories: Math.round(cat.target_calories * k),
+    })),
+  };
+}
+
+// Applies a newly-known daily_target (from the user's own edit, or from the
+// server via check-auth): updates the cached value and, if the catalog has
+// already loaded, rescales CATALOG and re-renders. Safe to call before
+// BASE_CATALOG/STATE exist yet (e.g. from boot(), before init() has run) —
+// it just caches the value for init() to pick up as its starting point.
+function applyDailyTarget(target) {
+  const rounded = Math.round(target);
+  if (!Number.isFinite(rounded) || rounded <= 0) return;
+  if (rounded === userDailyTarget && CATALOG) return; // no-op, avoid a pointless re-render
+  userDailyTarget = rounded;
+  saveCachedDailyTarget(rounded);
+  if (BASE_CATALOG) {
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
+    if (STATE) recomputeAndRender();
+  }
+}
+
 function showToast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -449,10 +525,19 @@ function renderLoadingShell() {
 async function init() {
   renderLoadingShell();
 
+  // The custom daily_target lives server-side (see database.js), but is
+  // cached locally too so it can be applied instantly, offline-first — the
+  // same pattern as the catalog cache just below. GET /api/check-auth
+  // (called from boot(), after this) fetches the current server value in
+  // the background and calls applyDailyTarget() again if it turns out to
+  // differ from this cached one (e.g. it was changed on another device).
+  userDailyTarget = loadCachedDailyTarget() || DEFAULT_DAILY_TARGET;
+
   // --- 1. IMMEDIATE RENDER: from local cache, before any network request ---
   const cachedCatalog = loadCachedCatalog();
   if (cachedCatalog) {
-    CATALOG = cachedCatalog;
+    BASE_CATALOG = cachedCatalog;
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
     try {
       await preloadHistory(); // CloudStorage/localStorage only — not a network call to OUR server
       await loadDayLog(TODAY);
@@ -469,8 +554,9 @@ async function init() {
   // --- 2. BACKGROUND: refresh the catalog from the network, don't block on it ---
   try {
     const fresh = await fetchCatalog();
-    CATALOG = fresh;
+    BASE_CATALOG = fresh;
     saveCachedCatalog(fresh);
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
 
     if (!cachedCatalog) {
       // First-ever load on this device — there was nothing to show until now.
@@ -594,6 +680,29 @@ async function syncDailyStatus() {
     // The dirty flag stays set, so the next log action or app open (via
     // persistAndSync -> markSyncDirty -> another attempt) retries it.
     console.error('[sync] Background status sync failed (will retry next action/open):', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Custom daily calorie target — persistence
+// ---------------------------------------------------------------------------
+
+// Persists the user's chosen daily_target to the server (POST
+// /api/user/settings, see server.js). Unlike food-log syncing, there's no
+// dirty-flag/retry queue here — it's a single explicit save action, not a
+// background sync of frequently-changing state — so a failed attempt just
+// throws for the caller to handle; the local value (already applied
+// optimistically by applyDailyTarget) stays correct either way.
+async function saveDailyTargetToServer(target) {
+  if (!INIT_DATA) return; // outside Telegram — nothing to sync, local value already applied
+  const res = await fetch('/api/user/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+    body: JSON.stringify({ daily_target: target }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
   }
 }
 
@@ -757,6 +866,105 @@ document.getElementById('weightClose')?.addEventListener('click', () => {
 });
 weightOverlay?.addEventListener('click', (e) => { if (e.target === weightOverlay) closeWeightSheet(); });
 wireUpWeightForm();
+
+// ---------------------------------------------------------------------------
+// Custom daily calorie target — UI
+// ---------------------------------------------------------------------------
+
+function openTargetSheet() {
+  const input = document.getElementById('targetInput');
+  const errorEl = document.getElementById('targetError');
+  const saveBtn = document.getElementById('targetSaveBtn');
+  if (!input || !errorEl || !saveBtn) return;
+
+  errorEl.textContent = '';
+  saveBtn.disabled = false;
+  input.value = userDailyTarget;
+  updateTargetPreview();
+
+  targetOverlay.classList.add('show');
+  // Autofocus + select-all, so re-entering a value is a single keystroke away.
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+function closeTargetSheet() {
+  targetOverlay.classList.remove('show');
+}
+
+// Live preview of the scaled macro goals as the user types a new target —
+// same K = target / base.daily_calorie_target math as scaleCatalog(), just
+// read-only here (doesn't touch CATALOG/STATE until the user actually saves).
+function updateTargetPreview() {
+  const input = document.getElementById('targetInput');
+  const previewEl = document.getElementById('targetPreview');
+  if (!input || !previewEl) return;
+
+  const val = parseInt(input.value, 10);
+  if (!Number.isFinite(val) || val <= 0 || !BASE_CATALOG) {
+    previewEl.textContent = '';
+    return;
+  }
+  const k = val / BASE_CATALOG.daily_calorie_target;
+  const protein = Math.round(BASE_CATALOG.protein_goal * k);
+  const fat = Math.round(BASE_CATALOG.fat_goal * k);
+  const carbs = Math.round(BASE_CATALOG.carbs_goal * k);
+  previewEl.innerHTML = `Білки <b>${protein}г</b> • Жири <b>${fat}г</b> • Вуглеводи <b>${carbs}г</b>`;
+}
+
+function wireUpTargetForm() {
+  const input = document.getElementById('targetInput');
+  const btn = document.getElementById('targetSaveBtn');
+  const errorEl = document.getElementById('targetError');
+  if (!input || !btn || !errorEl) return;
+
+  input.addEventListener('input', updateTargetPreview);
+
+  async function submit() {
+    errorEl.textContent = '';
+    const val = parseInt(input.value, 10);
+    if (!Number.isFinite(val) || val < MIN_DAILY_TARGET || val > MAX_DAILY_TARGET) {
+      errorEl.textContent = `Введіть коректну ціль (${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET} ккал).`;
+      return;
+    }
+
+    btn.disabled = true;
+    haptic('impact', 'medium');
+
+    // OPTIMISTIC: rescale every category/macro limit and re-render
+    // instantly, then persist to the server in the background — same
+    // pattern as every other write in this app (see persistAndSync()).
+    applyDailyTarget(val);
+    haptic('notification', 'success');
+    showToast('Денну ціль оновлено 🎯');
+    closeTargetSheet();
+
+    try {
+      await saveDailyTargetToServer(val);
+    } catch (err) {
+      // Non-fatal from the user's point of view — the local value is
+      // already correct (applied above); this just failed to reach the
+      // server, so the next check-auth background refresh or another save
+      // attempt will pick it up.
+      console.warn('[target] failed to persist to server:', err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+}
+
+const targetOverlay = document.getElementById('targetOverlay');
+document.getElementById('kcalTargetBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  openTargetSheet();
+});
+document.getElementById('targetClose')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  closeTargetSheet();
+});
+targetOverlay?.addEventListener('click', (e) => { if (e.target === targetOverlay) closeTargetSheet(); });
+wireUpTargetForm();
 
 // ---------------------------------------------------------------------------
 // Hero: ring + macros
@@ -1898,7 +2106,12 @@ async function checkAuthInBackground() {
     if (!body.authorized) {
       clearAuthorizedCached();
       showLockScreen();
+      return;
     }
+    // Picks up a daily_target changed on another device since this device
+    // last opened the app — no-ops (see applyDailyTarget) if it matches
+    // what's already applied here.
+    applyDailyTarget(body.daily_target);
   } catch (err) {
     console.warn('[auth] background re-check failed (non-fatal):', err);
   }
@@ -1933,6 +2146,13 @@ async function boot() {
         const body = await res.json();
         if (body.authorized) {
           setAuthorizedCached();
+          // Cache the server's daily_target now so init() (below) picks it
+          // up as its starting value instead of the 2220 default —
+          // BASE_CATALOG doesn't exist yet at this point, so a full
+          // applyDailyTarget() rescale would be a no-op anyway.
+          if (Number.isFinite(body.daily_target) && body.daily_target > 0) {
+            saveCachedDailyTarget(Math.round(body.daily_target));
+          }
           hideLockScreen();
           await init();
           return;
