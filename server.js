@@ -439,6 +439,114 @@ async function recordPredictionSafely(userId, kind, text) {
 }
 
 // ---------------------------------------------------------------------------
+// AI Fridge: recipe generation from whatever ingredients the user has
+// ---------------------------------------------------------------------------
+// Reuses GEMINI_ENDPOINT / GEMINI_MODEL / GEMINI_API_KEY from the top of this
+// file — NOT a hardcoded "gemini-1.5-flash" call. Per the comment on
+// GEMINI_MODEL above, 1.5/2.5 Flash 404 for projects that didn't have access
+// before Google's cutoff, so hardcoding 1.5 here would silently break this
+// feature on some deployments while the fortune-line feature kept working.
+// If this project's key specifically needs 1.5 Flash, set
+// GEMINI_MODEL=gemini-1.5-flash in .env — no code change required.
+
+function buildAiFridgeSystemInstruction({ ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs }) {
+  return `You are a fitness nutritionist chef. The user has the following ingredients: ${ingredients}. Their remaining daily targets are: ${remainingCalories} kcal, ${remainingProteins}g proteins, ${remainingFats}g fats, ${remainingCarbs}g carbs.${mealType ? ` This recipe is specifically for: ${mealType}.` : ''} Generate a simple, healthy recipe in Ukrainian that fits within these remaining calories/macros.
+
+Return STRICT raw JSON only, with exactly this shape (no markdown code fences, no commentary before or after):
+{
+  "title": string,
+  "description": string,
+  "ingredients_list": [{ "name": string, "amount": string }],
+  "total_calories": number,
+  "proteins": number,
+  "fats": number,
+  "carbs": number,
+  "steps": [string]
+}`;
+}
+
+// Separate from callGemini() above on purpose: that one is tuned for a
+// 1-2 sentence fortune line (MINIMAL thinking, low token cap, and it trims
+// quote characters off the result). A recipe is structurally different —
+// it needs a much bigger output budget, JSON mode instead of free text, and
+// the raw text handed back untouched so parseAiFridgeRecipe below can parse
+// it as-is.
+async function callGeminiForRecipe(systemInstruction) {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+    throw new Error('GEMINI_API_KEY is not set');
+  }
+
+  const res = await fetch(GEMINI_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents: [{ role: 'user', parts: [{ text: 'Generate the recipe now, as raw JSON only.' }] }],
+      generationConfig: {
+        temperature: 0.9,
+        // Recipes run longer than the fortune-line use case (title,
+        // description, ingredient list, macro breakdown, steps) — 2000
+        // leaves real headroom on top of MINIMAL thinking so a genuine
+        // MAX_TOKENS truncation below means the recipe was actually long,
+        // not that the budget was too tight.
+        maxOutputTokens: 2000,
+        thinkingConfig: { thinkingLevel: 'MINIMAL' },
+        // Ask Gemini itself to constrain output to valid JSON. Belt-and-
+        // suspenders: parseAiFridgeRecipe still defensively strips markdown
+        // fences below, in case a given model/version doesn't fully honor
+        // this for a particular request.
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Gemini API error ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const candidate = data?.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text;
+  if (!text || !text.trim()) throw new Error('Gemini returned no text');
+
+  if (candidate?.finishReason === 'MAX_TOKENS') {
+    throw new Error(`Gemini recipe response was truncated (finishReason=MAX_TOKENS, ${text.length} chars received)`);
+  }
+
+  return text.trim();
+}
+
+// Validates the shape of whatever Gemini handed back — deliberately strict
+// (throws on missing fields or wrong array types) rather than passing
+// something malformed through to the frontend, which is the caller's cue to
+// fall back to a 502 instead of shipping a broken recipe card.
+function parseAiFridgeRecipe(rawText) {
+  const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    throw new Error(`Gemini did not return valid JSON: ${err.message}`);
+  }
+
+  const requiredFields = ['title', 'description', 'ingredients_list', 'total_calories', 'proteins', 'fats', 'carbs', 'steps'];
+  const missing = requiredFields.filter((key) => parsed[key] === undefined || parsed[key] === null);
+  if (missing.length) {
+    throw new Error(`Gemini JSON is missing required field(s): ${missing.join(', ')}`);
+  }
+  if (!Array.isArray(parsed.ingredients_list) || !Array.isArray(parsed.steps)) {
+    throw new Error('Gemini JSON has ingredients_list and/or steps that are not arrays');
+  }
+
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
 // Summary message
 // ---------------------------------------------------------------------------
 
@@ -614,6 +722,53 @@ app.post('/api/sync-status', async (req, res) => {
   } catch (err) {
     console.error('[sync-status] failed:', err.message);
     res.status(502).json({ error: 'Failed to sync status' });
+  }
+});
+
+// Generates a recipe from ingredients the user says they have on hand,
+// tailored to fit whatever calories/macros they have left for the day.
+// Uses authenticateAllowedUser (defined below, hoisted) — same auth +
+// allowlist gate as sync-status/weight endpoints, since this is a
+// user-initiated action that spends a real Gemini API call and should be
+// gated the same way as everything else that costs something server-side.
+app.post('/api/ai-fridge', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return; // authenticateAllowedUser already sent the response
+
+  const { ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs } = req.body || {};
+
+  if (!ingredients || typeof ingredients !== 'string' || !ingredients.trim()) {
+    return res.status(400).json({ error: 'ingredients is required' });
+  }
+  if (mealType !== undefined && typeof mealType !== 'string') {
+    return res.status(400).json({ error: 'mealType must be a string if provided' });
+  }
+
+  const macros = { remainingCalories, remainingProteins, remainingFats, remainingCarbs };
+  const invalidMacro = Object.entries(macros).find(([, v]) => typeof v !== 'number' || Number.isNaN(v));
+  if (invalidMacro) {
+    return res.status(400).json({ error: `${invalidMacro[0]} is required and must be a number` });
+  }
+
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+    return res.status(503).json({ error: 'AI recipe generation is not configured (GEMINI_API_KEY missing)' });
+  }
+
+  try {
+    const systemInstruction = buildAiFridgeSystemInstruction({
+      ingredients: ingredients.trim(),
+      mealType,
+      remainingCalories,
+      remainingProteins,
+      remainingFats,
+      remainingCarbs,
+    });
+    const rawText = await callGeminiForRecipe(systemInstruction);
+    const recipe = parseAiFridgeRecipe(rawText);
+    res.json(recipe);
+  } catch (err) {
+    console.error('[ai-fridge] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося згенерувати рецепт. Спробуйте ще раз.' });
   }
 });
 
