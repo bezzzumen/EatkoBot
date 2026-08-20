@@ -2023,6 +2023,242 @@ document.getElementById('calcBtn')?.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// AI Fridge: Gemini-generated recipe from whatever ingredients the user has
+// ---------------------------------------------------------------------------
+// Three-view modal (form -> loading -> result) built the same way the
+// calculator sheet builds its content: raw innerHTML from a JS render
+// function, rather than static markup in index.html, since the result view
+// (variable-length ingredient list, variable-length steps) can't be
+// pre-authored. aiFridgeState.view drives which render*() runs; the footer
+// button also changes per view, so it's rendered separately from the
+// scrollable content above it.
+
+const aiFridgeOverlay = document.getElementById('aiFridgeOverlay');
+const aiFridgeContent = document.getElementById('aiFridgeContent');
+const aiFridgeFooter = document.getElementById('aiFridgeFooter');
+
+const AI_FRIDGE_MEAL_TYPES = ['Сніданок', 'Обід', 'Перекус', 'Вечеря'];
+
+let aiFridgeState = { view: 'form', recipe: null, lastIngredients: '', mealType: '' };
+
+function openAiFridgeSheet() {
+  // Deliberately keeps lastIngredients/mealType at their current values
+  // (not reset here) so reopening after a closed/failed attempt doesn't
+  // lose what the user already typed — only a fresh page load or a
+  // successfully logged recipe clears them.
+  aiFridgeState.view = 'form';
+  aiFridgeState.recipe = null;
+  renderAiFridge();
+  aiFridgeOverlay.classList.add('show');
+}
+function closeAiFridgeSheet() {
+  aiFridgeOverlay.classList.remove('show');
+}
+
+// Today's remaining calories/macros = today's (possibly custom-scaled, see
+// scaleCatalog) goal minus what's already logged. STATE is recomputed by
+// recomputeAndRender() after every log action, so this always reflects the
+// live remainder at the moment the user opens/submits this form — not a
+// stale snapshot from when the app first loaded.
+function getRemainingTargets() {
+  if (!STATE) return null;
+  return {
+    remainingCalories: Math.max(0, round1(STATE.goals.calories - STATE.totals.calories)),
+    remainingProteins: Math.max(0, round1(STATE.goals.protein - STATE.totals.protein)),
+    remainingFats: Math.max(0, round1(STATE.goals.fat - STATE.totals.fat)),
+    remainingCarbs: Math.max(0, round1(STATE.goals.carbs - STATE.totals.carbs)),
+  };
+}
+
+function renderAiFridge() {
+  if (aiFridgeState.view === 'loading') renderAiFridgeLoading();
+  else if (aiFridgeState.view === 'result') renderAiFridgeResult();
+  else renderAiFridgeForm();
+}
+
+function renderAiFridgeForm() {
+  const remaining = getRemainingTargets();
+  const mealOptions = AI_FRIDGE_MEAL_TYPES
+    .map((m) => `<option value="${escapeHtml(m)}" ${aiFridgeState.mealType === m ? 'selected' : ''}>${escapeHtml(m)}</option>`)
+    .join('');
+
+  aiFridgeContent.innerHTML = `
+    <div class="custom-input-wrap">
+      <div class="custom-input-label">Що є в холодильнику?</div>
+      <textarea class="ai-fridge-textarea" id="aiFridgeIngredients" placeholder="напр. куряче філе, 2 яйця, помідор">${escapeHtml(aiFridgeState.lastIngredients)}</textarea>
+    </div>
+    <div class="custom-input-wrap">
+      <div class="custom-input-label">Тип страви (необов'язково)</div>
+      <select class="ai-fridge-select" id="aiFridgeMealType">
+        <option value="" ${aiFridgeState.mealType ? '' : 'selected'}>Будь-який</option>
+        ${mealOptions}
+      </select>
+    </div>
+    ${remaining ? `
+      <div class="remaining-hint">
+        Залишок на сьогодні: <b>${fmtNum(remaining.remainingCalories)} ккал</b> ·
+        Б ${fmtNum(remaining.remainingProteins)}г · Ж ${fmtNum(remaining.remainingFats)}г · В ${fmtNum(remaining.remainingCarbs)}г
+      </div>
+    ` : ''}
+    <div class="ai-fridge-error" id="aiFridgeError"></div>
+  `;
+
+  aiFridgeFooter.innerHTML = `<button class="confirm-btn" id="aiFridgeSubmitBtn">✨ Згенерувати рецепт</button>`;
+  document.getElementById('aiFridgeSubmitBtn')?.addEventListener('click', submitAiFridgeRequest);
+}
+
+function renderAiFridgeLoading() {
+  aiFridgeContent.innerHTML = `
+    <div class="ai-fridge-loading">
+      <div class="ai-fridge-spinner"></div>
+      <div class="ai-fridge-loading-text">Готуємо рецепт... 🍳</div>
+    </div>
+  `;
+  aiFridgeFooter.innerHTML = '';
+}
+
+function renderAiFridgeResult() {
+  const r = aiFridgeState.recipe;
+  if (!r) { aiFridgeState.view = 'form'; renderAiFridgeForm(); return; }
+
+  const ingredientsHtml = Array.isArray(r.ingredients_list) && r.ingredients_list.length
+    ? `<div class="recipe-section-label">Інгредієнти</div><ul class="recipe-ingredients">${
+        r.ingredients_list.map((ing) => `
+          <li><span class="ing-name">${escapeHtml(ing?.name || '')}</span><span class="ing-amount">${escapeHtml(ing?.amount || '')}</span></li>
+        `).join('')
+      }</ul>`
+    : '';
+
+  const stepsHtml = Array.isArray(r.steps) && r.steps.length
+    ? `<div class="recipe-section-label">Приготування</div><ol class="recipe-steps">${
+        r.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')
+      }</ol>`
+    : '';
+
+  aiFridgeContent.innerHTML = `
+    <div class="recipe-title">${escapeHtml(r.title || '')}</div>
+    ${r.description ? `<div class="recipe-description">${escapeHtml(r.description)}</div>` : ''}
+    <div class="recipe-macros">
+      <div class="recipe-macro-chip"><div class="val mono">${fmtNum(Number(r.total_calories) || 0)}</div><div class="lbl">ккал</div></div>
+      <div class="recipe-macro-chip"><div class="val mono">${fmtNum(Number(r.proteins) || 0)}г</div><div class="lbl">Білки</div></div>
+      <div class="recipe-macro-chip"><div class="val mono">${fmtNum(Number(r.fats) || 0)}г</div><div class="lbl">Жири</div></div>
+      <div class="recipe-macro-chip"><div class="val mono">${fmtNum(Number(r.carbs) || 0)}г</div><div class="lbl">Вуглев.</div></div>
+    </div>
+    ${ingredientsHtml}
+    ${stepsHtml}
+    <div class="ai-fridge-error" id="aiFridgeError"></div>
+  `;
+
+  aiFridgeFooter.innerHTML = `<button class="log-meal-btn" id="aiFridgeLogBtn">📥 Зарахувати страву в раціон</button>`;
+  document.getElementById('aiFridgeLogBtn')?.addEventListener('click', logAiFridgeRecipe);
+}
+
+async function submitAiFridgeRequest() {
+  const ingredientsInput = document.getElementById('aiFridgeIngredients');
+  const mealSelect = document.getElementById('aiFridgeMealType');
+  const errorEl = document.getElementById('aiFridgeError');
+
+  const ingredients = (ingredientsInput?.value || '').trim();
+  const mealType = mealSelect?.value || '';
+
+  // Remembered up front (before any validation return) so a failed
+  // attempt still leaves the textarea/select exactly as the user left them
+  // when the form re-renders.
+  aiFridgeState.lastIngredients = ingredientsInput?.value || '';
+  aiFridgeState.mealType = mealType;
+
+  if (!ingredients) {
+    if (errorEl) errorEl.textContent = 'Вкажіть, що є в холодильнику.';
+    return;
+  }
+  if (!INIT_DATA) {
+    if (errorEl) errorEl.textContent = 'Відкрийте це через Telegram-бота.';
+    return;
+  }
+  const remaining = getRemainingTargets();
+  if (!remaining) {
+    if (errorEl) errorEl.textContent = 'Дані ще завантажуються. Спробуйте за мить.';
+    return;
+  }
+
+  haptic('impact', 'medium');
+  aiFridgeState.view = 'loading';
+  renderAiFridge();
+
+  try {
+    const res = await fetch('/api/ai-fridge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+      body: JSON.stringify({
+        ingredients,
+        mealType: mealType || undefined,
+        ...remaining,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Не вдалося згенерувати рецепт. Спробуйте ще раз.');
+
+    aiFridgeState.recipe = body;
+    aiFridgeState.view = 'result';
+    haptic('notification', 'success');
+    renderAiFridge();
+  } catch (err) {
+    haptic('notification', 'error');
+    aiFridgeState.view = 'form';
+    renderAiFridge();
+    const errEl = document.getElementById('aiFridgeError');
+    if (errEl) errEl.textContent = err.message;
+  }
+}
+
+// Adds the recipe's total_calories straight into JUNK_KEY — the same
+// direct-kcal counter the "Погане ЇДЛО" quick-add sheet and the КБЖУ
+// calculator sheet both write to (see openCalculatorSheet's submit handler
+// above, which this mirrors exactly): optimistic in-memory update + instant
+// re-render, then persist/sync to the server in the background without the
+// UI waiting on it.
+//
+// NOTE: only total_calories is logged, not the recipe's protein/fat/carb
+// numbers — JUNK_KEY is a pure kcal counter with no macro fields (see
+// computeDayStatus: junk_food's macros always compute to 0), so this has
+// the exact same limitation the calculator and junk quick-add already have.
+// The recipe's macro breakdown is still shown to the user in the result
+// view; it just isn't separately persisted into the day's macro totals.
+function logAiFridgeRecipe() {
+  const r = aiFridgeState.recipe;
+  if (!r) return;
+  const kcal = Math.max(0, Number(r.total_calories) || 0);
+  if (kcal <= 0) { closeAiFridgeSheet(); return; }
+
+  haptic('impact', 'medium');
+
+  const dayLog = dayLogCache.get(TODAY) || {};
+  dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + kcal);
+  setDayLogInMemory(TODAY, dayLog);
+  recomputeAndRender();
+
+  haptic('notification', 'success');
+  showToast(`Рецепт «${r.title || 'Страву'}» зараховано 📥`);
+
+  aiFridgeState.recipe = null;
+  aiFridgeState.lastIngredients = '';
+  aiFridgeState.mealType = '';
+  closeAiFridgeSheet();
+
+  persistAndSync();
+}
+
+document.getElementById('aiFridgeBtn')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  openAiFridgeSheet();
+});
+document.getElementById('aiFridgeClose')?.addEventListener('click', () => {
+  haptic('impact', 'light');
+  closeAiFridgeSheet();
+});
+aiFridgeOverlay?.addEventListener('click', (e) => { if (e.target === aiFridgeOverlay) closeAiFridgeSheet(); });
+
+// ---------------------------------------------------------------------------
 // Invite-code authorization
 // ---------------------------------------------------------------------------
 // Gates the whole app behind an invite code. Once verified, "authorized" is
