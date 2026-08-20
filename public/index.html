@@ -138,8 +138,12 @@
   }
   .streak-inline.zero { color: var(--tg-hint); }
 
+  /* 2x2 instead of the old 1x3 — a 4th button ("🧊 AI Холодильник") joins
+     Калькулятор/Вага/Статистика here, and its label is longer than the
+     other three, so a single row of 4 would either wrap or force the font
+     size down further. Two rows keeps every label on one line. */
   .action-row {
-    display: grid; grid-template-columns: repeat(3, 1fr);
+    display: grid; grid-template-columns: repeat(2, 1fr);
     gap: 8px; margin-bottom: 12px;
   }
 
@@ -835,6 +839,96 @@
   .weight-compare-row .value.up { color: var(--danger); }
   .weight-error { font-size: 12px; color: var(--danger); margin-top: 8px; min-height: 14px; }
 
+  /* ===== AI FRIDGE MODAL ===== */
+
+  /* Same rationale as .analytics-sheet — a generated recipe (title,
+     description, macro chips, ingredients, steps) can run long, so this
+     needs more room than the fixed-content weight/target sheets. */
+  .ai-fridge-sheet { max-height: 88vh; }
+
+  .ai-fridge-textarea {
+    width: 100%; min-height: 84px; padding: 12px 14px; border-radius: 13px;
+    border: 1px solid var(--glass-border); background: var(--glass-bg); color: var(--tg-text);
+    font-size: 14px; font-weight: 500; line-height: 1.4; resize: vertical;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+  .ai-fridge-textarea:focus { outline: none; border-color: var(--aurora-1); }
+  .ai-fridge-textarea::placeholder { color: var(--tg-hint); }
+
+  .ai-fridge-select {
+    width: 100%; padding: 12px 14px; border-radius: 13px;
+    border: 1px solid var(--glass-border); background: var(--glass-bg); color: var(--tg-text);
+    font-size: 14px; font-weight: 600;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+  .ai-fridge-select:focus { outline: none; border-color: var(--aurora-1); }
+
+  .ai-fridge-loading {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 52px 12px 44px; text-align: center;
+  }
+  .ai-fridge-spinner {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 3px solid var(--glass-border); border-top-color: var(--aurora-1);
+    animation: ai-fridge-spin 0.8s linear infinite;
+  }
+  @keyframes ai-fridge-spin { to { transform: rotate(360deg); } }
+  .ai-fridge-loading-text { font-size: 13.5px; font-weight: 600; color: var(--tg-hint); }
+
+  .recipe-title { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; margin: 2px 0 6px; }
+  .recipe-description { font-size: 13px; color: var(--tg-hint); line-height: 1.5; margin-bottom: 16px; }
+
+  .recipe-macros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
+  .recipe-macro-chip {
+    padding: 10px 4px; border-radius: 13px; text-align: center;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+  }
+  .recipe-macro-chip .val { font-size: 14px; font-weight: 800; }
+  .recipe-macro-chip .lbl {
+    font-size: 9px; color: var(--tg-hint); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.02em; margin-top: 3px;
+  }
+
+  .recipe-section-label {
+    font-size: 11px; color: var(--tg-hint); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; margin: 4px 2px 10px;
+  }
+
+  .recipe-ingredients { list-style: none; padding: 0; margin: 0 0 18px; display: flex; flex-direction: column; gap: 8px; }
+  .recipe-ingredients li {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    padding: 10px 12px; border-radius: 12px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    font-size: 13px;
+  }
+  .recipe-ingredients .ing-name { font-weight: 600; }
+  .recipe-ingredients .ing-amount { color: var(--tg-hint); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+
+  .recipe-steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
+  .recipe-steps li {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 10px 10px;
+    border-radius: 12px; background: var(--glass-bg); border: 1px solid var(--glass-border);
+    font-size: 13px; line-height: 1.45;
+  }
+  .recipe-steps li::before {
+    counter-increment: step; content: counter(step);
+    flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800;
+  }
+
+  .ai-fridge-error { font-size: 12px; color: var(--danger); margin-top: 4px; min-height: 14px; text-align: center; }
+
+  .log-meal-btn {
+    width: 100%; padding: 15px; border: none; border-radius: 16px;
+    background: linear-gradient(135deg, var(--protein-1), var(--protein-2)); color: #06281c;
+    font-size: 15px; font-weight: 800; cursor: pointer;
+    box-shadow: 0 8px 24px var(--success-glow);
+    transition: transform 0.15s ease;
+  }
+  .log-meal-btn:active { transform: scale(0.97); }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; }
   }
@@ -882,6 +976,7 @@
     <button class="analytics-btn" id="calcBtn">🧮 Калькулятор</button>
     <button class="analytics-btn" id="weightBtn" aria-label="Вага">⚖️ Вага</button>
     <button class="analytics-btn" id="analyticsBtn">📊 Статистика</button>
+    <button class="analytics-btn" id="aiFridgeBtn">🧊 AI Холодильник</button>
   </div>
 
   <div class="hero-card glass">
@@ -1040,6 +1135,27 @@
     <div class="sheet-footer">
       <button class="confirm-btn" id="targetSaveBtn">Зберегти ціль</button>
     </div>
+  </div>
+</div>
+
+
+<div class="overlay" id="aiFridgeOverlay">
+  <div class="sheet ai-fridge-sheet" id="aiFridgeSheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div class="titlewrap">
+        <div class="sheet-emoji">🧊</div>
+        <div>
+          <h2>AI Холодильник</h2>
+          <div class="sub">Рецепт з того, що є під рукою</div>
+        </div>
+      </div>
+      <button class="sheet-close" id="aiFridgeClose">✕</button>
+    </div>
+    <div class="sheet-scroll" id="aiFridgeScroll">
+      <div id="aiFridgeContent"></div>
+    </div>
+    <div class="sheet-footer" id="aiFridgeFooter"></div>
   </div>
 </div>
 
