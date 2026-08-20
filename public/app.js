@@ -750,21 +750,17 @@ function weightTrendClass(diff) {
 }
 
 // The Вага button is now a compact, statically-labeled action-row button
-// (like Калькулятор/Статистика) rather than a pill showing the live weight
-// value — that detail now lives only inside the weight sheet itself
-// (openWeightSheet's weightHeroValue/weightCompare). This just toggles the
-// "prompt" nudge state — an amber pulse inviting a tap — when no weight has
-// been logged yet this week, mirroring the old pill's prompt behavior.
+// (like Калькулятор/Статистика/AI Холодильник) rather than a pill showing
+// the live weight value — that detail lives only inside the weight sheet
+// itself (openWeightSheet's weightHeroValue/weightCompare). It used to also
+// pulse amber ("prompt" class) when no weight had been logged yet this
+// week; that accent was removed so all four action-row buttons share the
+// same unified dark styling. This function is now a no-op kept only so its
+// call sites (openWeightSheet, wireUpWeightForm, init) don't need to change.
 function renderWeightWidget() {
   const btn = document.getElementById('weightBtn');
   if (!btn) return;
-
-  if (weightState.loading) {
-    btn.classList.remove('prompt');
-    return;
-  }
-
-  btn.classList.toggle('prompt', !weightState.current_week);
+  btn.classList.remove('prompt');
 }
 
 function openWeightSheet() {
@@ -2039,7 +2035,7 @@ const aiFridgeFooter = document.getElementById('aiFridgeFooter');
 
 const AI_FRIDGE_MEAL_TYPES = ['Сніданок', 'Обід', 'Перекус', 'Вечеря'];
 
-let aiFridgeState = { view: 'form', recipe: null, lastIngredients: '', mealType: '' };
+let aiFridgeState = { view: 'form', recipe: null, lastIngredients: '', mealType: '', lastMaxCalories: '' };
 
 function openAiFridgeSheet() {
   // Deliberately keeps lastIngredients/mealType at their current values
@@ -2093,6 +2089,13 @@ function renderAiFridgeForm() {
         <option value="" ${aiFridgeState.mealType ? '' : 'selected'}>Будь-який</option>
         ${mealOptions}
       </select>
+    </div>
+    <div class="custom-input-wrap">
+      <div class="custom-input-label">Бажаний ліміт калорій (ккал)</div>
+      <div class="custom-input-row">
+        <input type="number" inputmode="numeric" min="1" step="1" id="aiFridgeMaxCalories"
+          placeholder="наприклад: 350 (необов'язково)" value="${escapeHtml(aiFridgeState.lastMaxCalories)}" />
+      </div>
     </div>
     ${remaining ? `
       <div class="remaining-hint">
@@ -2156,16 +2159,19 @@ function renderAiFridgeResult() {
 async function submitAiFridgeRequest() {
   const ingredientsInput = document.getElementById('aiFridgeIngredients');
   const mealSelect = document.getElementById('aiFridgeMealType');
+  const maxCaloriesInput = document.getElementById('aiFridgeMaxCalories');
   const errorEl = document.getElementById('aiFridgeError');
 
   const ingredients = (ingredientsInput?.value || '').trim();
   const mealType = mealSelect?.value || '';
+  const maxCaloriesRaw = (maxCaloriesInput?.value || '').trim();
 
   // Remembered up front (before any validation return) so a failed
-  // attempt still leaves the textarea/select exactly as the user left them
-  // when the form re-renders.
+  // attempt still leaves the textarea/select/input exactly as the user
+  // left them when the form re-renders.
   aiFridgeState.lastIngredients = ingredientsInput?.value || '';
   aiFridgeState.mealType = mealType;
+  aiFridgeState.lastMaxCalories = maxCaloriesRaw;
 
   if (!ingredients) {
     if (errorEl) errorEl.textContent = 'Вкажіть, що є в холодильнику.';
@@ -2175,6 +2181,20 @@ async function submitAiFridgeRequest() {
     if (errorEl) errorEl.textContent = 'Відкрийте це через Telegram-бота.';
     return;
   }
+
+  // Optional — an empty field means "no cap" and is simply omitted from
+  // the request (server treats missing/null the same way). Only validated
+  // when the user actually typed something.
+  let maxCalories;
+  if (maxCaloriesRaw) {
+    const parsed = Number(maxCaloriesRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      if (errorEl) errorEl.textContent = 'Ліміт калорій має бути додатним числом.';
+      return;
+    }
+    maxCalories = parsed;
+  }
+
   const remaining = getRemainingTargets();
   if (!remaining) {
     if (errorEl) errorEl.textContent = 'Дані ще завантажуються. Спробуйте за мить.';
@@ -2192,6 +2212,7 @@ async function submitAiFridgeRequest() {
       body: JSON.stringify({
         ingredients,
         mealType: mealType || undefined,
+        maxCalories,
         ...remaining,
       }),
     });
@@ -2243,6 +2264,7 @@ function logAiFridgeRecipe() {
   aiFridgeState.recipe = null;
   aiFridgeState.lastIngredients = '';
   aiFridgeState.mealType = '';
+  aiFridgeState.lastMaxCalories = '';
   closeAiFridgeSheet();
 
   persistAndSync();
