@@ -141,39 +141,30 @@
   /* 2x2 instead of the old 1x3 — a 4th button ("🧊 AI Холодильник") joins
      Калькулятор/Вага/Статистика here, and its label is longer than the
      other three, so a single row of 4 would either wrap or force the font
-     size down further. Two rows keeps every label on one line. */
+     size down further. Two rows keeps every label on one line. Slightly
+     larger gap + min-height on the buttons below gives all four room to
+     breathe on narrow screens instead of looking cramped. */
   .action-row {
     display: grid; grid-template-columns: repeat(2, 1fr);
-    gap: 8px; margin-bottom: 12px;
+    gap: 10px; margin-bottom: 14px;
   }
 
   .analytics-btn {
     display: flex; align-items: center; justify-content: center; gap: 6px;
-    padding: 8px 10px; border-radius: var(--radius-pill);
+    min-height: 44px; padding: 12px 10px; box-sizing: border-box;
+    border-radius: var(--radius-pill);
     background: var(--glass-bg-strong);
     -webkit-backdrop-filter: blur(20px);
     backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
     box-shadow: var(--glass-inset);
     color: var(--tg-text);
-    font-size: 11.5px; font-weight: 700;
+    font-size: 12px; font-weight: 700;
     cursor: pointer;
     transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
     white-space: nowrap;
   }
   .analytics-btn:active { transform: scale(0.95); }
-  /* Warm "needs attention" state — reused by the Вага button when no
-     weight has been logged this week, matching the old weight-pill nudge. */
-  .analytics-btn.prompt {
-    background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.38);
-    color: #fde68a;
-    animation: weight-prompt-pulse 2.4s ease-in-out infinite;
-  }
-  [data-theme="light"] .analytics-btn.prompt { color: #92400e; }
-  @keyframes weight-prompt-pulse {
-    0%, 100% { box-shadow: 0 0 0 rgba(251,191,36,0); }
-    50% { box-shadow: 0 0 14px rgba(251,191,36,0.45); }
-  }
 
   .week-row {
     display: flex; justify-content: space-between; gap: 6px;
@@ -856,12 +847,41 @@
   .ai-fridge-textarea::placeholder { color: var(--tg-hint); }
 
   .ai-fridge-select {
-    width: 100%; padding: 12px 14px; border-radius: 13px;
-    border: 1px solid var(--glass-border); background: var(--glass-bg); color: var(--tg-text);
+    width: 100%; padding: 12px 40px 12px 14px; border-radius: 13px;
+    border: 1px solid var(--glass-border); background-color: var(--glass-bg-strong);
+    color: var(--tg-text);
     font-size: 14px; font-weight: 600;
     font-family: 'Plus Jakarta Sans', sans-serif;
+    cursor: pointer;
+    /* Hides each browser's native select chrome (arrow + OS-styled box) so
+       the custom look below actually shows through — this is what lets the
+       rest of this rule (background, border-radius, custom arrow) take
+       effect instead of being overridden by the platform's own picker UI. */
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    /* Two small rotated gradients draw a minimal chevron ("v") in place of
+       the native arrow, tinted to match --tg-hint like every other icon
+       in this app. */
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--tg-hint) 50%),
+      linear-gradient(135deg, var(--tg-hint) 50%, transparent 50%);
+    background-position: calc(100% - 20px) calc(50% - 3px), calc(100% - 15px) calc(50% - 3px);
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    transition: border-color 0.2s ease;
   }
   .ai-fridge-select:focus { outline: none; border-color: var(--aurora-1); }
+  /* The open dropdown's option list is rendered by the OS/browser, not this
+     page, so styling here only takes effect on platforms that let a page
+     theme it (desktop Chrome/Edge/Firefox) — mobile OS-native pickers
+     (iOS/Android, including inside Telegram's WebView) always draw their
+     own system-styled list regardless. Harmless where unsupported; a nicer
+     match where it is. */
+  .ai-fridge-select option {
+    background: var(--tg-secondary-bg);
+    color: var(--tg-text);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-weight: 600;
+  }
 
   .ai-fridge-loading {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
