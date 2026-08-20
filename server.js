@@ -449,8 +449,19 @@ async function recordPredictionSafely(userId, kind, text) {
 // If this project's key specifically needs 1.5 Flash, set
 // GEMINI_MODEL=gemini-1.5-flash in .env — no code change required.
 
-function buildAiFridgeSystemInstruction({ ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs }) {
-  return `You are a fitness nutritionist chef. The user has the following ingredients: ${ingredients}. Their remaining daily targets are: ${remainingCalories} kcal, ${remainingProteins}g proteins, ${remainingFats}g fats, ${remainingCarbs}g carbs.${mealType ? ` This recipe is specifically for: ${mealType}.` : ''} Generate a simple, healthy recipe in Ukrainian that fits within these remaining calories/macros.
+function buildAiFridgeSystemInstruction({ ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs, maxCalories }) {
+  // Two different constraints depending on whether maxCalories was sent:
+  // a hard cap (e.g. "I only want a 400kcal snack right now", independent
+  // of how much room is actually left in the day) vs the default of fitting
+  // within whatever's left of today's targets. maxCalories, when present,
+  // takes priority over remainingCalories even if remainingCalories is
+  // larger — it does NOT lower an already-smaller remainingCalories either;
+  // it's a ceiling on top of it, not a replacement macro target.
+  const calorieInstruction = (maxCalories !== undefined && maxCalories !== null)
+    ? `The recipe's total_calories MUST NOT exceed ${maxCalories} kcal — treat this as a hard ceiling, even though the user's remaining daily calories are ${remainingCalories} kcal (which may be higher).`
+    : `The recipe should fit within the user's remaining daily calories: ${remainingCalories} kcal.`;
+
+  return `You are a fitness nutritionist chef. The user has the following ingredients: ${ingredients}. Their remaining daily macro targets are: ${remainingProteins}g proteins, ${remainingFats}g fats, ${remainingCarbs}g carbs. ${calorieInstruction}${mealType ? ` This recipe is specifically for: ${mealType}.` : ''} Generate a simple, healthy recipe in Ukrainian.
 
 Return STRICT raw JSON only, with exactly this shape (no markdown code fences, no commentary before or after):
 {
@@ -735,13 +746,20 @@ app.post('/api/ai-fridge', async (req, res) => {
   const tgUser = await authenticateAllowedUser(req, res);
   if (!tgUser) return; // authenticateAllowedUser already sent the response
 
-  const { ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs } = req.body || {};
+  const { ingredients, mealType, remainingCalories, remainingProteins, remainingFats, remainingCarbs, maxCalories } = req.body || {};
 
   if (!ingredients || typeof ingredients !== 'string' || !ingredients.trim()) {
     return res.status(400).json({ error: 'ingredients is required' });
   }
   if (mealType !== undefined && typeof mealType !== 'string') {
     return res.status(400).json({ error: 'mealType must be a string if provided' });
+  }
+  // Optional hard calorie ceiling — distinct from remainingCalories (see
+  // buildAiFridgeSystemInstruction above). null is accepted as an explicit
+  // "no cap", same as omitting the field entirely; only a non-number,
+  // non-null value is rejected.
+  if (maxCalories !== undefined && maxCalories !== null && (typeof maxCalories !== 'number' || Number.isNaN(maxCalories) || maxCalories <= 0)) {
+    return res.status(400).json({ error: 'maxCalories must be a positive number if provided' });
   }
 
   const macros = { remainingCalories, remainingProteins, remainingFats, remainingCarbs };
@@ -762,6 +780,7 @@ app.post('/api/ai-fridge', async (req, res) => {
       remainingProteins,
       remainingFats,
       remainingCarbs,
+      maxCalories: maxCalories ?? null,
     });
     const rawText = await callGeminiForRecipe(systemInstruction);
     const recipe = parseAiFridgeRecipe(rawText);
