@@ -749,13 +749,13 @@ function weightTrendClass(diff) {
   return '';
 }
 
-// The Вага button is now a compact, statically-labeled action-row button
-// (like Калькулятор/Статистика/AI Холодильник) rather than a pill showing
-// the live weight value — that detail lives only inside the weight sheet
+// The Вага button is now a compact, statically-labeled bottom-nav button
+// (like Калькулятор/Статистика/AI Fridge) rather than a pill showing the
+// live weight value — that detail lives only inside the weight sheet
 // itself (openWeightSheet's weightHeroValue/weightCompare). It used to also
 // pulse amber ("prompt" class) when no weight had been logged yet this
-// week; that accent was removed so all four action-row buttons share the
-// same unified dark styling. This function is now a no-op kept only so its
+// week; that accent was removed so all four bottom-nav buttons share the
+// same unified styling. This function is now a no-op kept only so its
 // call sites (openWeightSheet, wireUpWeightForm, init) don't need to change.
 function renderWeightWidget() {
   const btn = document.getElementById('weightBtn');
