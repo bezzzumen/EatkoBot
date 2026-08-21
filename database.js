@@ -228,18 +228,30 @@ async function ensureSchema() {
 
   // Existing deployments created `users` before daily_target existed, so
   // CREATE TABLE IF NOT EXISTS above is a no-op for them and never adds the
-  // column. This backfills it on those installs. On a fresh install the
-  // column already exists from the CREATE TABLE above, so this always fails
-  // with "duplicate column name" there — expected, and safely ignored. Any
-  // OTHER error still throws, since that would mean something genuinely
-  // unexpected went wrong.
+  // column. This backfills it on those installs. On a fresh install (or a
+  // redeploy of an install that already has the column) the column already
+  // exists from the CREATE TABLE above, so this always fails there —
+  // expected, and safely ignored below rather than left to crash
+  // ensureSchema (and therefore boot).
+  //
+  // Two message patterns are checked because different Turso/libsql driver
+  // versions have phrased this differently ("duplicate column name: X" vs
+  // "column X already exists" / "X already exists") — matching only one
+  // pattern is exactly what let this slip through and fail a real
+  // deployment, so both are covered here. Any OTHER error still throws,
+  // since that would mean something genuinely unexpected went wrong (e.g.
+  // a real connectivity or permissions problem) and ensureSchema should
+  // not silently continue past that.
   try {
     await runTursoQuery(
       'ensureSchema: users.daily_target migration',
       `ALTER TABLE users ADD COLUMN daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`
     );
   } catch (err) {
-    if (!/duplicate column name/i.test(err?.message || '')) {
+    const message = String(err?.message || '');
+    if (/duplicate column name/i.test(message) || /already exists/i.test(message)) {
+      console.log('[ensureSchema] Column daily_target already exists, skipping migration');
+    } else {
       throw err;
     }
   }
