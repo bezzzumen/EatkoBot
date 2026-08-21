@@ -453,12 +453,30 @@ function saveCachedDailyTarget(target) {
 // Works identically for K < 1 (a lower target, e.g. 1800) and K > 1 (a
 // higher one, e.g. 2800) — it's just multiplication either way.
 //
-// Per-item fields (max_grams, and each item's own protein/carbs/fat) are
-// deliberately left untouched: a category's per-gram calorie rate for
-// logging is target_calories / max_grams (see the productKcalPerGram
-// comment further down), so scaling target_calories alone already scales
-// what a full serving "costs" against the new target — no need to also
-// touch max_grams.
+// BUGFIX: per-item max_grams (and each item's own protein/carbs/fat) used
+// to be left untouched, on the theory that scaling target_calories alone
+// was enough since logging math uses target_calories / max_grams as the
+// per-gram rate. That theory was wrong on two counts:
+//   1. Display: a category's calorie limit would double but its listed
+//      product weights (e.g. "макс 85g") stayed frozen at the base-2220
+//      value, which reads as a bug to the user even though the ratio math
+//      technically still balanced.
+//   2. Nutrition correctness: computeDayMacros/computeDayCategoryCalories
+//      compute ratio = loggedGrams / item.max_grams (loggedGrams being the
+//      user's actual real-world grams eaten, independent of K) and then
+//      multiply that ratio by item.protein/carbs/fat. If max_grams doesn't
+//      scale by K but the physical grams logged doesn't change either,
+//      that's fine on its own — but it means "eating the same 85g of
+//      chicken" silently means something different in the app depending
+//      on what K happens to be, since max_grams no longer represents "how
+//      many grams make up target_calories worth of this food" once K != 1.
+// The fix: scale max_grams by K too, so max_grams keeps meaning "grams
+// that use up this category's (now-scaled) target_calories" — and scale
+// each item's protein/carbs/fat by the same K, so kcal-per-gram and
+// macro-per-gram both stay the real nutritional constants they're
+// supposed to be, regardless of K. (The K's cancel out algebraically in
+// every ratio-based computation once max_grams and target_calories scale
+// together — see computeDayMacros/computeDayCategoryCalories below.)
 function scaleCatalog(base, target) {
   if (!base) return base;
   const k = target / base.daily_calorie_target;
@@ -471,6 +489,13 @@ function scaleCatalog(base, target) {
     categories: base.categories.map((cat) => ({
       ...cat,
       target_calories: Math.round(cat.target_calories * k),
+      items: cat.items.map((item) => ({
+        ...item,
+        max_grams: typeof item.max_grams === 'number' ? Math.round(item.max_grams * k) : item.max_grams,
+        protein: typeof item.protein === 'number' ? Math.round(item.protein * k) : item.protein,
+        carbs: typeof item.carbs === 'number' ? Math.round(item.carbs * k) : item.carbs,
+        fat: typeof item.fat === 'number' ? Math.round(item.fat * k) : item.fat,
+      })),
     })),
   };
 }
