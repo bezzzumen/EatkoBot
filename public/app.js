@@ -278,13 +278,50 @@ const JUNK_KEY = '__junk_kcal';
 // expandable category-card list (see computeDayStatus and renderCategories).
 const JUNK_CATEGORY_KEY = 'junk_food';
 
+// The CATEGORIES_META key (database.js) that "Будь-чого" is registered
+// under — a normal catalog category (has its own target_calories and
+// seed-data.js items), but ALSO accepts free-form, non-catalog products via
+// the custom-item sheet below (openFreebieCustomSheet). Those custom
+// entries are tracked the same reserved-key way JUNK_KEY tracks "Погане
+// ЇДЛО": a running kcal total plus an optional cumulative macros object,
+// both folded into this category's usage/consumption alongside its normal
+// catalog items (see computeDayStatus).
+const FREEBIE_CATEGORY_KEY = 'freebie';
+const FREEBIE_CUSTOM_KCAL_KEY = '__freebie_custom_kcal';
+const FREEBIE_CUSTOM_MACROS_KEY = '__freebie_custom_macros'; // {protein, fat, carbs} cumulative
+
+// Optional П/Ж/В (per-100g) fields on the Калькулятор sheet. Calories from
+// that sheet still land in JUNK_KEY exactly as before (it's still logging
+// "off-catalog" calories) — this just carries the macros half of the same
+// entry into the daily macro totals, since JUNK_KEY alone has no macros.
+const CALC_MACROS_KEY = '__calc_macros'; // {protein, fat, carbs} cumulative
+
+// Every reserved (non product-key) slot a day-log object can hold — used
+// wherever code needs to tell "a real catalog product_key" apart from one
+// of these free-form counters.
+const RESERVED_LOG_KEYS = new Set([JUNK_KEY, FREEBIE_CUSTOM_KCAL_KEY, FREEBIE_CUSTOM_MACROS_KEY, CALC_MACROS_KEY]);
+
+// Reads one of the {protein, fat, carbs} reserved-key objects above,
+// tolerating anything missing/malformed (older saved logs, a corrupted
+// CloudStorage value, etc.) by defaulting every field to 0.
+function readMacrosObj(dayLog, key) {
+  const raw = dayLog ? dayLog[key] : null;
+  if (!raw || typeof raw !== 'object') return { protein: 0, fat: 0, carbs: 0 };
+  return {
+    protein: Math.max(0, Number(raw.protein) || 0),
+    fat: Math.max(0, Number(raw.fat) || 0),
+    carbs: Math.max(0, Number(raw.carbs) || 0),
+  };
+}
+
 function totalCaloriesForDay(dayLog) {
   if (!dayLog) return null;
   const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
-  const productKeys = Object.keys(dayLog).filter((k) => k !== JUNK_KEY);
-  if (!productKeys.length && junkKcal <= 0) return null; // nothing logged at all that day
+  const freebieCustomKcal = Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0);
+  const productKeys = Object.keys(dayLog).filter((k) => !RESERVED_LOG_KEYS.has(k));
+  if (!productKeys.length && junkKcal <= 0 && freebieCustomKcal <= 0) return null; // nothing logged at all that day
 
-  let total = junkKcal;
+  let total = junkKcal + freebieCustomKcal;
   for (const cat of CATALOG.categories) {
     let ratio = 0;
     for (const item of cat.items) {
@@ -341,7 +378,21 @@ function computeDayStatus(dayLog) {
   // Computed up front so the junk_food category entry below can use it.
   const junkKcal = round1(Math.max(0, Number(dayLog[JUNK_KEY]) || 0));
 
+  // "Будь-чого" custom (non-catalog) items — same idea as junk kcal above,
+  // but scoped to the freebie category's own budget, plus an optional
+  // macros side (JUNK_KEY has none). See the FREEBIE_* consts for why.
+  const freebieCustomKcal = round1(Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0));
+  const freebieCustomMacros = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+
+  // Калькулятор's optional П/Ж/В fields — its kcal already lands in
+  // JUNK_KEY above (unchanged behavior); this is just the macros half of
+  // that same entry, added to the day's totals directly (it isn't tied to
+  // any one category).
+  const calcMacros = readMacrosObj(dayLog, CALC_MACROS_KEY);
+
   const categories = CATALOG.categories.map((catMeta) => {
+    const isFreebie = catMeta.key === FREEBIE_CATEGORY_KEY;
+
     const items = catMeta.items.map((p) => {
       const loggedGrams = dayLog[p.product_key] || 0;
       const ratio = p.max_grams ? loggedGrams / p.max_grams : 0;
@@ -358,22 +409,27 @@ function computeDayStatus(dayLog) {
       };
     });
 
-    const usageRatio = items.reduce((sum, it) => sum + it.percent / 100, 0);
+    // Custom "Будь-чого" entries count toward this category's own budget
+    // exactly like its catalog items do — as a fraction of target_calories
+    // — so a big custom entry can push it to 'complete'/'over' the same
+    // way logging its catalog items would.
+    const customRatio = isFreebie && catMeta.target_calories ? freebieCustomKcal / catMeta.target_calories : 0;
+    const usageRatio = items.reduce((sum, it) => sum + it.percent / 100, 0) + customRatio;
     // junk_food has no catalog items (see seed-data.js) — its calories come
     // straight from the junk-kcal sheet instead of target_calories*usage.
-    // Its macros stay 0 (items is empty, same as before this was a category).
     const caloriesConsumed = catMeta.key === JUNK_CATEGORY_KEY ? junkKcal : catMeta.target_calories * usageRatio;
-    const proteinConsumed = items.reduce((sum, it) => sum + it.protein, 0);
-    const carbsConsumed = items.reduce((sum, it) => sum + it.carbs, 0);
-    const fatConsumed = items.reduce((sum, it) => sum + it.fat, 0);
+    const proteinConsumed = items.reduce((sum, it) => sum + it.protein, 0) + (isFreebie ? freebieCustomMacros.protein : 0);
+    const carbsConsumed = items.reduce((sum, it) => sum + it.carbs, 0) + (isFreebie ? freebieCustomMacros.carbs : 0);
+    const fatConsumed = items.reduce((sum, it) => sum + it.fat, 0) + (isFreebie ? freebieCustomMacros.fat : 0);
 
     totalCalories += caloriesConsumed;
     totalProtein += proteinConsumed;
     totalCarbs += carbsConsumed;
     totalFat += fatConsumed;
 
-    // junk_food is uncapped by design, so usageRatio (always 0 — no items)
-    // never pushes it to 'complete'/'over'; it just stays 'active'.
+    // junk_food is uncapped by design, so usageRatio (always 0 — no items,
+    // no custom ratio) never pushes it to 'complete'/'over'; it just stays
+    // 'active'.
     let status = 'active';
     if (usageRatio >= 1.005) status = 'over';
     else if (usageRatio >= 0.995) status = 'complete';
@@ -390,8 +446,20 @@ function computeDayStatus(dayLog) {
       carbs: round1(carbsConsumed),
       fat: round1(fatConsumed),
       items,
+      // Custom (non-catalog) portion of the above, broken out so the UI can
+      // show "Власні продукти: …" separately from the catalog items list.
+      // Always present (0 for non-freebie categories) so callers don't
+      // need an isFreebie check of their own.
+      custom_kcal: isFreebie ? freebieCustomKcal : 0,
+      custom_protein: isFreebie ? round1(freebieCustomMacros.protein) : 0,
+      custom_fat: isFreebie ? round1(freebieCustomMacros.fat) : 0,
+      custom_carbs: isFreebie ? round1(freebieCustomMacros.carbs) : 0,
     };
   });
+
+  totalProtein += calcMacros.protein;
+  totalCarbs += calcMacros.carbs;
+  totalFat += calcMacros.fat;
 
   return {
     total_calories: round1(totalCalories),
@@ -826,6 +894,7 @@ function openWeightSheet() {
 }
 function closeWeightSheet() {
   weightOverlay.classList.remove('show');
+  clearActiveNavBtn();
 }
 
 function wireUpWeightForm() {
@@ -879,6 +948,7 @@ function wireUpWeightForm() {
 const weightOverlay = document.getElementById('weightOverlay');
 document.getElementById('weightBtn')?.addEventListener('click', () => {
   haptic('impact', 'light');
+  setActiveNavBtn('weightBtn');
   openWeightSheet();
 });
 document.getElementById('weightClose')?.addEventListener('click', () => {
@@ -1093,6 +1163,8 @@ function renderCategories() {
       const barPct = Math.min(100, cat.usage_percent);
       const barClass = cat.status === 'over' ? 'over' : cat.status === 'complete' ? 'complete' : '';
 
+      const isFreebie = cat.category_key === FREEBIE_CATEGORY_KEY;
+
       const items = cat.items.map((item) => {
         const itemBarPct = Math.min(100, item.percent);
         const itemBarClass = item.percent > 100 ? 'over' : '';
@@ -1106,6 +1178,18 @@ function renderCategories() {
             <div class="chev">›</div>
           </div>`;
       }).join('');
+
+      // "Будь-чого" only: summary of whatever's been logged via the
+      // free-form custom-item sheet (openFreebieCustomSheet), plus the
+      // entry point to add another one.
+      const freebieCustomSummaryHtml = isFreebie && cat.custom_kcal > 0 ? `
+        <div class="custom-summary-row">
+          <span>Власні продукти</span>
+          <span class="mono">${Math.round(cat.custom_kcal)} ккал${(cat.custom_protein || cat.custom_fat || cat.custom_carbs) ? ` · Б ${fmtNum(cat.custom_protein)}г Ж ${fmtNum(cat.custom_fat)}г В ${fmtNum(cat.custom_carbs)}г` : ''}</span>
+        </div>` : '';
+      const freebieAddBtnHtml = isFreebie
+        ? `<button class="add-custom-item-btn" data-add-freebie-custom>+ Додати власний продукт (КБЖУ)</button>`
+        : '';
 
       return `
         <section class="cat-card glass status-${cat.status} ${isOpen ? 'open' : ''}" data-category="${cat.category_key}">
@@ -1127,7 +1211,11 @@ function renderCategories() {
           </div>
           <div class="cat-body">
             <div class="cat-body-inner">
-              <div class="item-list">${items || '<div class="empty-note">Немає товарів у цій категорії — додайте у seed-data.js.</div>'}</div>
+              <div class="item-list">
+                ${freebieCustomSummaryHtml}
+                ${items || (isFreebie ? '' : '<div class="empty-note">Немає товарів у цій категорії — додайте у seed-data.js.</div>')}
+                ${freebieAddBtnHtml}
+              </div>
             </div>
           </div>
         </section>`;
@@ -1173,6 +1261,14 @@ function renderCategories() {
     });
   });
 
+  container.querySelectorAll('[data-add-freebie-custom]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      haptic('impact', 'light');
+      openFreebieCustomSheet();
+    });
+  });
+
   document.getElementById('junkCard')?.addEventListener('click', () => {
     haptic('impact', 'light');
     openJunkSheet();
@@ -1214,6 +1310,18 @@ function computeDayMacros(dayLog) {
   const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
   calories += junkKcal;
 
+  // Custom (non-catalog) entries: "Будь-чого" free-form items and the
+  // Калькулятор's optional П/Ж/В fields — see the FREEBIE_*/CALC_MACROS_KEY
+  // comments near JUNK_KEY above. Folded in here the same way computeDayStatus
+  // folds them in, so Statistics matches the live dashboard.
+  const freebieCustomKcal = Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0);
+  calories += freebieCustomKcal;
+  const freebieCustomMacros = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+  const calcMacros = readMacrosObj(dayLog, CALC_MACROS_KEY);
+  protein += freebieCustomMacros.protein + calcMacros.protein;
+  carbs += freebieCustomMacros.carbs + calcMacros.carbs;
+  fat += freebieCustomMacros.fat + calcMacros.fat;
+
   return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat), junk: round1(junkKcal) };
 }
 
@@ -1234,6 +1342,11 @@ function computeDayCategoryCalories(dayLog) {
     byCategory[cat.key] = cat.target_calories * categoryRatio;
   }
   byCategory[JUNK_CATEGORY_KEY] = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
+  // "Будь-чого" custom entries add on top of its catalog-item calories
+  // computed above (mirrors computeDayStatus's caloriesConsumed for the
+  // same category).
+  byCategory[FREEBIE_CATEGORY_KEY] = (byCategory[FREEBIE_CATEGORY_KEY] || 0)
+    + Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0);
   return byCategory;
 }
 
@@ -1612,10 +1725,12 @@ function openAnalytics() {
 }
 function closeAnalytics() {
   analyticsOverlay.classList.remove('show');
+  clearActiveNavBtn();
 }
 
 document.getElementById('analyticsBtn')?.addEventListener('click', () => {
   haptic('impact', 'light');
+  setActiveNavBtn('analyticsBtn');
   openAnalytics();
 });
 document.getElementById('analyticsClose')?.addEventListener('click', () => {
@@ -1663,7 +1778,21 @@ document.getElementById('sheetClose').addEventListener('click', () => { haptic('
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSheet(); });
 
 function openSheet() { overlay.classList.add('show'); }
-function closeSheet() { overlay.classList.remove('show'); }
+function closeSheet() { overlay.classList.remove('show'); clearActiveNavBtn(); }
+
+// Bottom-nav "active tab" glow (see .bottom-nav-btn.nav-active in
+// index.html). These are modals, not routed views, so "active" just means
+// "this button's own sheet/overlay is currently open" — set right before
+// opening it, cleared from that sheet's own close function.
+const NAV_BTN_IDS = ['calcBtn', 'weightBtn', 'aiFridgeBtn', 'analyticsBtn'];
+function setActiveNavBtn(id) {
+  NAV_BTN_IDS.forEach((navId) => {
+    document.getElementById(navId)?.classList.toggle('nav-active', navId === id);
+  });
+}
+function clearActiveNavBtn() {
+  NAV_BTN_IDS.forEach((navId) => document.getElementById(navId)?.classList.remove('nav-active'));
+}
 
 const QUICK_ADDS = [5, 10, 50, 100];
 
@@ -1945,23 +2074,41 @@ function openJunkSheet() {
 function openCalculatorSheet() {
   sheetEmoji.textContent = '🧮';
   sheetTitle.textContent = 'Калькулятор';
-  sheetSub.textContent = 'Калорійність на 100г × вага порції';
+  sheetSub.textContent = 'КБЖУ на 100г × вага порції';
 
-  const calcState = { per100: null, grams: null };
+  // protein100/fat100/carbs100 are optional — leaving them blank just means
+  // 0g of that macro for the portion, kcal still computes from per100 alone.
+  const calcState = { per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
 
-  function computedTotal() {
+  function computedTotalKcal() {
     if (!Number.isFinite(calcState.per100) || !Number.isFinite(calcState.grams)) return 0;
     return Math.max(0, (calcState.per100 * calcState.grams) / 100);
   }
 
+  function computedMacros() {
+    if (!Number.isFinite(calcState.grams) || calcState.grams <= 0) return { protein: 0, fat: 0, carbs: 0 };
+    const g = calcState.grams;
+    const p = Number.isFinite(calcState.protein100) ? calcState.protein100 : 0;
+    const f = Number.isFinite(calcState.fat100) ? calcState.fat100 : 0;
+    const c = Number.isFinite(calcState.carbs100) ? calcState.carbs100 : 0;
+    return {
+      protein: round1(Math.max(0, (p * g) / 100)),
+      fat: round1(Math.max(0, (f * g) / 100)),
+      carbs: round1(Math.max(0, (c * g) / 100)),
+    };
+  }
+
   function render() {
-    const total = computedTotal();
+    const total = computedTotalKcal();
+    const macros = computedMacros();
+    const hasMacros = macros.protein || macros.fat || macros.carbs;
 
     sheetContent.innerHTML = `
       <div class="sheet-scroll">
         <div class="calc-result">
           <div class="calc-result-value mono" id="calcResultValue">${fmtNum(round1(total))}</div>
           <div class="calc-result-label">ккал загалом</div>
+          ${hasMacros ? `<div class="calc-result-macros" id="calcResultMacros">Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г</div>` : ''}
         </div>
 
         <div class="custom-input-wrap">
@@ -1977,6 +2124,24 @@ function openCalculatorSheet() {
           <div class="custom-input-row">
             <input type="number" inputmode="decimal" id="calcGramsInput" placeholder="напр. 150" value="${calcState.grams ?? ''}" />
             <div class="unit-label">г</div>
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">КБЖУ на 100г (необов'язково)</div>
+          <div class="calc-macro-grid">
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="calcProteinInput" placeholder="0" value="${calcState.protein100 ?? ''}" />
+              <span class="calc-macro-label">Білки</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="calcFatInput" placeholder="0" value="${calcState.fat100 ?? ''}" />
+              <span class="calc-macro-label">Жири</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="calcCarbsInput" placeholder="0" value="${calcState.carbs100 ?? ''}" />
+              <span class="calc-macro-label">Вуглев.</span>
+            </div>
           </div>
         </div>
       </div>
@@ -2003,17 +2168,51 @@ function openCalculatorSheet() {
       updateResult();
     });
 
+    const proteinInput = document.getElementById('calcProteinInput');
+    proteinInput?.addEventListener('input', () => {
+      const val = parseFloat(proteinInput.value);
+      calcState.protein100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const fatInput = document.getElementById('calcFatInput');
+    fatInput?.addEventListener('input', () => {
+      const val = parseFloat(fatInput.value);
+      calcState.fat100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const carbsInput = document.getElementById('calcCarbsInput');
+    carbsInput?.addEventListener('input', () => {
+      const val = parseFloat(carbsInput.value);
+      calcState.carbs100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
     const submitBtn = document.getElementById('calcSubmitBtn');
     submitBtn?.addEventListener('click', () => {
-      const total = round1(computedTotal());
+      const total = round1(computedTotalKcal());
       if (total <= 0) return;
       haptic('impact', 'medium');
 
+      const macros = computedMacros();
+
       // OPTIMISTIC: same pattern as the junk-kcal quick-add sheet — mutate
       // in-memory state and re-render instantly, then persist in the
-      // background without the UI waiting on it.
+      // background without the UI waiting on it. Kcal still goes to
+      // JUNK_KEY as before; the optional macros ride along in
+      // CALC_MACROS_KEY so they reach the top macro bars and Statistics too
+      // (see computeDayStatus/computeDayMacros).
       const dayLog = dayLogCache.get(TODAY) || {};
       dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + total);
+      if (macros.protein || macros.fat || macros.carbs) {
+        const prev = readMacrosObj(dayLog, CALC_MACROS_KEY);
+        dayLog[CALC_MACROS_KEY] = {
+          protein: round1(prev.protein + macros.protein),
+          fat: round1(prev.fat + macros.fat),
+          carbs: round1(prev.carbs + macros.carbs),
+        };
+      }
       setDayLogInMemory(TODAY, dayLog);
       recomputeAndRender();
 
@@ -2025,9 +2224,26 @@ function openCalculatorSheet() {
   }
 
   function updateResult() {
-    const total = computedTotal();
+    const total = computedTotalKcal();
+    const macros = computedMacros();
+    const hasMacros = macros.protein || macros.fat || macros.carbs;
+
     const resultEl = document.getElementById('calcResultValue');
     if (resultEl) resultEl.textContent = fmtNum(round1(total));
+
+    let macrosEl = document.getElementById('calcResultMacros');
+    const macrosHtml = hasMacros ? `Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г` : '';
+    if (macrosEl) {
+      if (macrosHtml) macrosEl.textContent = macrosHtml;
+      else macrosEl.remove();
+    } else if (macrosHtml) {
+      const div = document.createElement('div');
+      div.className = 'calc-result-macros';
+      div.id = 'calcResultMacros';
+      div.textContent = macrosHtml;
+      document.querySelector('.calc-result')?.appendChild(div);
+    }
+
     const submitBtn = document.getElementById('calcSubmitBtn');
     if (submitBtn) submitBtn.disabled = !(total > 0);
   }
@@ -2038,8 +2254,197 @@ function openCalculatorSheet() {
 
 document.getElementById('calcBtn')?.addEventListener('click', () => {
   haptic('impact', 'light');
+  setActiveNavBtn('calcBtn');
   openCalculatorSheet();
 });
+
+// --- "Будь-чого" custom item sheet: a free-form product not in the
+// catalog. Same per-100g × portion-weight math as the Калькулятор above,
+// but scoped to the "Будь-чого" category's own budget
+// (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) instead of "Погане
+// ЇДЛО", so it counts toward that category's progress bar as well as the
+// top macro bars and Statistics — see computeDayStatus/computeDayMacros. ---
+
+function openFreebieCustomSheet() {
+  const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
+
+  sheetEmoji.textContent = '🍫';
+  sheetTitle.textContent = 'Будь-чого — власний продукт';
+  sheetSub.textContent = 'КБЖУ на 100г × вага порції';
+
+  const calcState = { per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
+
+  function computedTotalKcal() {
+    if (!Number.isFinite(calcState.per100) || !Number.isFinite(calcState.grams)) return 0;
+    return Math.max(0, (calcState.per100 * calcState.grams) / 100);
+  }
+
+  function computedMacros() {
+    if (!Number.isFinite(calcState.grams) || calcState.grams <= 0) return { protein: 0, fat: 0, carbs: 0 };
+    const g = calcState.grams;
+    const p = Number.isFinite(calcState.protein100) ? calcState.protein100 : 0;
+    const f = Number.isFinite(calcState.fat100) ? calcState.fat100 : 0;
+    const c = Number.isFinite(calcState.carbs100) ? calcState.carbs100 : 0;
+    return {
+      protein: round1(Math.max(0, (p * g) / 100)),
+      fat: round1(Math.max(0, (f * g) / 100)),
+      carbs: round1(Math.max(0, (c * g) / 100)),
+    };
+  }
+
+  function render() {
+    const total = computedTotalKcal();
+    const macros = computedMacros();
+    const hasMacros = macros.protein || macros.fat || macros.carbs;
+    const remaining = freebieCat ? Math.max(0, round1(freebieCat.target_calories - freebieCat.calories_consumed)) : null;
+
+    sheetContent.innerHTML = `
+      <div class="sheet-scroll">
+        ${remaining !== null ? `<div class="remaining-hint">Залишок бюджету «Будь-чого»: <b>${fmtNum(remaining)} ккал</b></div>` : ''}
+
+        <div class="calc-result">
+          <div class="calc-result-value mono" id="freebieResultValue">${fmtNum(round1(total))}</div>
+          <div class="calc-result-label">ккал загалом</div>
+          ${hasMacros ? `<div class="calc-result-macros" id="freebieResultMacros">Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г</div>` : ''}
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Калорійність на 100г (ккал)</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="freebiePer100Input" placeholder="напр. 250" value="${calcState.per100 ?? ''}" />
+            <div class="unit-label">ккал</div>
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Вага порції (г)</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="freebieGramsInput" placeholder="напр. 150" value="${calcState.grams ?? ''}" />
+            <div class="unit-label">г</div>
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">КБЖУ на 100г (необов'язково)</div>
+          <div class="calc-macro-grid">
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="freebieProteinInput" placeholder="0" value="${calcState.protein100 ?? ''}" />
+              <span class="calc-macro-label">Білки</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="freebieFatInput" placeholder="0" value="${calcState.fat100 ?? ''}" />
+              <span class="calc-macro-label">Жири</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="freebieCarbsInput" placeholder="0" value="${calcState.carbs100 ?? ''}" />
+              <span class="calc-macro-label">Вуглев.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sheet-footer">
+        <button class="confirm-btn" id="freebieSubmitBtn" ${total > 0 ? '' : 'disabled'}>Додати до «Будь-чого»</button>
+      </div>
+    `;
+
+    bind();
+  }
+
+  function bind() {
+    const per100Input = document.getElementById('freebiePer100Input');
+    per100Input?.addEventListener('input', () => {
+      const val = parseFloat(per100Input.value);
+      calcState.per100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const gramsInput = document.getElementById('freebieGramsInput');
+    gramsInput?.addEventListener('input', () => {
+      const val = parseFloat(gramsInput.value);
+      calcState.grams = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const proteinInput = document.getElementById('freebieProteinInput');
+    proteinInput?.addEventListener('input', () => {
+      const val = parseFloat(proteinInput.value);
+      calcState.protein100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const fatInput = document.getElementById('freebieFatInput');
+    fatInput?.addEventListener('input', () => {
+      const val = parseFloat(fatInput.value);
+      calcState.fat100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const carbsInput = document.getElementById('freebieCarbsInput');
+    carbsInput?.addEventListener('input', () => {
+      const val = parseFloat(carbsInput.value);
+      calcState.carbs100 = Number.isFinite(val) ? val : null;
+      updateResult();
+    });
+
+    const submitBtn = document.getElementById('freebieSubmitBtn');
+    submitBtn?.addEventListener('click', () => {
+      const total = round1(computedTotalKcal());
+      if (total <= 0) return;
+      haptic('impact', 'medium');
+
+      const macros = computedMacros();
+
+      // OPTIMISTIC: same pattern as every other log sheet — mutate
+      // in-memory state and re-render instantly, then persist in the
+      // background without the UI waiting on it.
+      const dayLog = dayLogCache.get(TODAY) || {};
+      dayLog[FREEBIE_CUSTOM_KCAL_KEY] = Math.max(0, (Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0) + total);
+      if (macros.protein || macros.fat || macros.carbs) {
+        const prev = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+        dayLog[FREEBIE_CUSTOM_MACROS_KEY] = {
+          protein: round1(prev.protein + macros.protein),
+          fat: round1(prev.fat + macros.fat),
+          carbs: round1(prev.carbs + macros.carbs),
+        };
+      }
+      setDayLogInMemory(TODAY, dayLog);
+      recomputeAndRender();
+
+      haptic('notification', 'success');
+      closeSheet();
+
+      persistAndSync();
+    });
+  }
+
+  function updateResult() {
+    const total = computedTotalKcal();
+    const macros = computedMacros();
+    const hasMacros = macros.protein || macros.fat || macros.carbs;
+
+    const resultEl = document.getElementById('freebieResultValue');
+    if (resultEl) resultEl.textContent = fmtNum(round1(total));
+
+    let macrosEl = document.getElementById('freebieResultMacros');
+    const macrosHtml = hasMacros ? `Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г` : '';
+    if (macrosEl) {
+      if (macrosHtml) macrosEl.textContent = macrosHtml;
+      else macrosEl.remove();
+    } else if (macrosHtml) {
+      const div = document.createElement('div');
+      div.className = 'calc-result-macros';
+      div.id = 'freebieResultMacros';
+      div.textContent = macrosHtml;
+      document.querySelector('.calc-result')?.appendChild(div);
+    }
+
+    const submitBtn = document.getElementById('freebieSubmitBtn');
+    if (submitBtn) submitBtn.disabled = !(total > 0);
+  }
+
+  render();
+  openSheet();
+}
 
 // ---------------------------------------------------------------------------
 
@@ -2074,6 +2479,7 @@ function openAiFridgeSheet() {
 }
 function closeAiFridgeSheet() {
   aiFridgeOverlay.classList.remove('show');
+  clearActiveNavBtn();
 }
 
 // Today's remaining calories/macros = today's (possibly custom-scaled, see
@@ -2297,6 +2703,7 @@ function logAiFridgeRecipe() {
 
 document.getElementById('aiFridgeBtn')?.addEventListener('click', () => {
   haptic('impact', 'light');
+  setActiveNavBtn('aiFridgeBtn');
   openAiFridgeSheet();
 });
 document.getElementById('aiFridgeClose')?.addEventListener('click', () => {
