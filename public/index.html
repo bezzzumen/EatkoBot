@@ -368,43 +368,44 @@
 
   main { padding: 16px 16px 0; display: flex; flex-direction: column; gap: 10px; }
 
+  /* "Горіхи та насіння" is the final card in the list — this needs to be
+     generous enough that even the expanded card scrolls fully clear above
+     the fixed bottom nav bar (see .bottom-nav's own height + blur). */
+  #categoriesContainer { padding-bottom: calc(140px + env(safe-area-inset-bottom)) !important; }
+
   .cat-card { overflow: hidden; transition: opacity 0.3s ease; }
   .cat-card.status-complete { opacity: 0.7; }
-
-  /* "Погане ЇДЛО" — standalone overdraft card: subtle red border + warm
-     gradient wash to visually separate it from the 8 budgeted categories. */
-  .junk-card {
-    cursor: pointer;
-    border: 1px solid rgba(255, 69, 58, 0.38);
-    background:
-      linear-gradient(135deg, rgba(255, 69, 58, 0.14), rgba(251, 146, 60, 0.06)),
-      var(--glass-bg);
-    box-shadow: var(--shadow-card), 0 0 26px rgba(255, 69, 58, 0.1), var(--glass-inset);
-    transition: transform 0.15s ease;
-  }
-  .junk-card:active { transform: scale(0.99); }
-  .junk-card .cat-emoji { background: rgba(255, 69, 58, 0.16); border-color: rgba(255, 69, 58, 0.42); }
-  .junk-pill {
-    background: rgba(255, 69, 58, 0.18);
-    border: 1px solid rgba(255, 69, 58, 0.48);
-    color: var(--danger);
-    font-weight: 800;
-    letter-spacing: 0.01em;
-  }
 
   .cat-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 13px 16px; cursor: pointer; user-select: none;
   }
   .cat-header .left { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  .cat-header .cat-emoji {
+
+  /* Premium colored SVG badges — one distinct theme color per food type,
+     a soft glowing/semi-transparent background + border in that color, and
+     the icon itself drawn in the same color via currentColor. Each
+     .cat-badge-<key> below corresponds 1:1 to a CATEGORIES_META key
+     (database.js) and CATEGORY_ICON_SVG entry (app.js). */
+  .cat-icon-badge {
     width: 38px; height: 38px; border-radius: 13px;
-    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
-    display: flex; align-items: center; justify-content: center; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; position: relative;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg-strong);
+    color: var(--tg-hint);
   }
-  .cat-card.status-complete .cat-emoji { background: rgba(52,211,153,0.14); border-color: rgba(52,211,153,0.35); }
-  .cat-card.status-over .cat-emoji { background: rgba(255,69,58,0.14); border-color: rgba(255,69,58,0.4); }
+  .cat-icon-badge svg { width: 20px; height: 20px; }
+
+  .cat-badge-garnish   { background: rgba(245, 185, 66, 0.16);  border-color: rgba(245, 185, 66, 0.4);  color: #f5b942; box-shadow: 0 0 14px rgba(245, 185, 66, 0.22); }
+  .cat-badge-dairy     { background: rgba(56, 189, 248, 0.16);  border-color: rgba(56, 189, 248, 0.4);  color: #38bdf8; box-shadow: 0 0 14px rgba(56, 189, 248, 0.22); }
+  .cat-badge-freebie   { background: rgba(236, 72, 153, 0.16);  border-color: rgba(236, 72, 153, 0.4);  color: #ec4899; box-shadow: 0 0 14px rgba(236, 72, 153, 0.22); }
+  .cat-badge-protein   { background: rgba(244, 63, 94, 0.16);   border-color: rgba(244, 63, 94, 0.4);   color: #fb7185; box-shadow: 0 0 14px rgba(244, 63, 94, 0.22); }
+  .cat-badge-veggies   { background: rgba(34, 197, 94, 0.16);   border-color: rgba(34, 197, 94, 0.4);   color: #4ade80; box-shadow: 0 0 14px rgba(34, 197, 94, 0.22); }
+  .cat-badge-fats      { background: rgba(132, 204, 22, 0.16);  border-color: rgba(132, 204, 22, 0.4);  color: #a3e635; box-shadow: 0 0 14px rgba(132, 204, 22, 0.22); }
+  .cat-badge-fruits    { background: rgba(168, 85, 247, 0.16);  border-color: rgba(168, 85, 247, 0.4);  color: #c084fc; box-shadow: 0 0 14px rgba(168, 85, 247, 0.22); }
+  .cat-badge-nuts      { background: rgba(249, 115, 22, 0.16);  border-color: rgba(249, 115, 22, 0.4);  color: #fb923c; box-shadow: 0 0 14px rgba(249, 115, 22, 0.22); }
+  .cat-badge-fallback  { background: var(--glass-bg-strong); border-color: var(--glass-border); color: var(--tg-hint); }
 
   .cat-header .titles { min-width: 0; }
   .cat-header .titles h3 { margin: 0; font-size: 14.5px; font-weight: 700; }
@@ -849,7 +850,6 @@
   .category-row .category-pct { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--tg-hint); }
   .category-bar-track { height: 6px; border-radius: var(--radius-pill); background: var(--glass-bg-strong); overflow: hidden; }
   .category-bar-fill { height: 100%; border-radius: var(--radius-pill); background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2)); }
-  .category-bar-fill.junk { background: linear-gradient(90deg, var(--warning), var(--danger)); }
 
   /* Discipline metrics — on-target day count + the single best day of the
      period (closest to target). */
