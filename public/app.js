@@ -266,40 +266,32 @@ const round1 = (n) => Math.round(n * 10) / 10;
 let CATALOG = null;
 let STATE = null;
 
-// Reserved key inside a day-log object for the "Погане ЇДЛО" (junk calories)
-// feature — a direct kcal counter, not a product. Safe from collisions since
-// real product_key values are always `${category_key}_${index}` and never
-// start with double underscores.
-const JUNK_KEY = '__junk_kcal';
-
-// The CATEGORIES_META key (database.js) that "Погане ЇДЛО" is registered
-// under. Its calories come from JUNK_KEY above, not from catalog items, so
-// it's excluded from the normal item-based target/usage math and from the
-// expandable category-card list (see computeDayStatus and renderCategories).
+// "Погане ЇДЛО" (junk calories) has been removed as a feature — quick/custom
+// entries (Калькулятор-style КБЖУ-on-100g-and-weight logging, AI Fridge
+// recipes, etc.) now all log exclusively through "Будь-чого" below.
+//
+// junk_food itself is still registered server-side in CATEGORIES_META (so
+// old saved logs and the sync/broadcast schema don't break), but it has no
+// catalog items and target_calories 0, so it never contributes to any
+// total here and is filtered out of the rendered category list —
+// JUNK_CATEGORY_KEY exists purely for that rendering filter now.
 const JUNK_CATEGORY_KEY = 'junk_food';
 
 // The CATEGORIES_META key (database.js) that "Будь-чого" is registered
 // under — a normal catalog category (has its own target_calories and
 // seed-data.js items), but ALSO accepts free-form, non-catalog products via
-// the custom-item sheet below (openFreebieCustomSheet). Those custom
-// entries are tracked the same reserved-key way JUNK_KEY tracks "Погане
-// ЇДЛО": a running kcal total plus an optional cumulative macros object,
-// both folded into this category's usage/consumption alongside its normal
-// catalog items (see computeDayStatus).
+// the custom-item sheet below (openFreebieCustomSheet): a running kcal
+// total plus an optional cumulative macros object, both folded into this
+// category's usage/consumption alongside its normal catalog items (see
+// computeDayStatus).
 const FREEBIE_CATEGORY_KEY = 'freebie';
 const FREEBIE_CUSTOM_KCAL_KEY = '__freebie_custom_kcal';
 const FREEBIE_CUSTOM_MACROS_KEY = '__freebie_custom_macros'; // {protein, fat, carbs} cumulative
 
-// Optional П/Ж/В (per-100g) fields on the Калькулятор sheet. Calories from
-// that sheet still land in JUNK_KEY exactly as before (it's still logging
-// "off-catalog" calories) — this just carries the macros half of the same
-// entry into the daily macro totals, since JUNK_KEY alone has no macros.
-const CALC_MACROS_KEY = '__calc_macros'; // {protein, fat, carbs} cumulative
-
 // Every reserved (non product-key) slot a day-log object can hold — used
 // wherever code needs to tell "a real catalog product_key" apart from one
 // of these free-form counters.
-const RESERVED_LOG_KEYS = new Set([JUNK_KEY, FREEBIE_CUSTOM_KCAL_KEY, FREEBIE_CUSTOM_MACROS_KEY, CALC_MACROS_KEY]);
+const RESERVED_LOG_KEYS = new Set([FREEBIE_CUSTOM_KCAL_KEY, FREEBIE_CUSTOM_MACROS_KEY]);
 
 // Reads one of the {protein, fat, carbs} reserved-key objects above,
 // tolerating anything missing/malformed (older saved logs, a corrupted
@@ -316,12 +308,11 @@ function readMacrosObj(dayLog, key) {
 
 function totalCaloriesForDay(dayLog) {
   if (!dayLog) return null;
-  const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
   const freebieCustomKcal = Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0);
   const productKeys = Object.keys(dayLog).filter((k) => !RESERVED_LOG_KEYS.has(k));
-  if (!productKeys.length && junkKcal <= 0 && freebieCustomKcal <= 0) return null; // nothing logged at all that day
+  if (!productKeys.length && freebieCustomKcal <= 0) return null; // nothing logged at all that day
 
-  let total = junkKcal + freebieCustomKcal;
+  let total = freebieCustomKcal;
   for (const cat of CATALOG.categories) {
     let ratio = 0;
     for (const item of cat.items) {
@@ -374,21 +365,11 @@ function computeWeek(todayDate) {
 function computeDayStatus(dayLog) {
   let totalCalories = 0, totalProtein = 0, totalCarbs = 0, totalFat = 0;
 
-  // "Погане ЇДЛО" — direct kcal entry (JUNK_KEY), not a max_grams product.
-  // Computed up front so the junk_food category entry below can use it.
-  const junkKcal = round1(Math.max(0, Number(dayLog[JUNK_KEY]) || 0));
-
-  // "Будь-чого" custom (non-catalog) items — same idea as junk kcal above,
-  // but scoped to the freebie category's own budget, plus an optional
-  // macros side (JUNK_KEY has none). See the FREEBIE_* consts for why.
+  // "Будь-чого" custom (non-catalog) items — a direct kcal counter plus an
+  // optional macros side, scoped to the freebie category's own budget. See
+  // the FREEBIE_* consts above for why.
   const freebieCustomKcal = round1(Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0));
   const freebieCustomMacros = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
-
-  // Калькулятор's optional П/Ж/В fields — its kcal already lands in
-  // JUNK_KEY above (unchanged behavior); this is just the macros half of
-  // that same entry, added to the day's totals directly (it isn't tied to
-  // any one category).
-  const calcMacros = readMacrosObj(dayLog, CALC_MACROS_KEY);
 
   const categories = CATALOG.categories.map((catMeta) => {
     const isFreebie = catMeta.key === FREEBIE_CATEGORY_KEY;
@@ -415,9 +396,7 @@ function computeDayStatus(dayLog) {
     // way logging its catalog items would.
     const customRatio = isFreebie && catMeta.target_calories ? freebieCustomKcal / catMeta.target_calories : 0;
     const usageRatio = items.reduce((sum, it) => sum + it.percent / 100, 0) + customRatio;
-    // junk_food has no catalog items (see seed-data.js) — its calories come
-    // straight from the junk-kcal sheet instead of target_calories*usage.
-    const caloriesConsumed = catMeta.key === JUNK_CATEGORY_KEY ? junkKcal : catMeta.target_calories * usageRatio;
+    const caloriesConsumed = catMeta.target_calories * usageRatio;
     const proteinConsumed = items.reduce((sum, it) => sum + it.protein, 0) + (isFreebie ? freebieCustomMacros.protein : 0);
     const carbsConsumed = items.reduce((sum, it) => sum + it.carbs, 0) + (isFreebie ? freebieCustomMacros.carbs : 0);
     const fatConsumed = items.reduce((sum, it) => sum + it.fat, 0) + (isFreebie ? freebieCustomMacros.fat : 0);
@@ -427,9 +406,9 @@ function computeDayStatus(dayLog) {
     totalCarbs += carbsConsumed;
     totalFat += fatConsumed;
 
-    // junk_food is uncapped by design, so usageRatio (always 0 — no items,
-    // no custom ratio) never pushes it to 'complete'/'over'; it just stays
-    // 'active'.
+    // junk_food is uncapped-and-unused now (see JUNK_CATEGORY_KEY comment
+    // above) — target_calories 0 and no items means usageRatio is always 0,
+    // so it just stays 'active' and contributes nothing to any total.
     let status = 'active';
     if (usageRatio >= 1.005) status = 'over';
     else if (usageRatio >= 0.995) status = 'complete';
@@ -457,10 +436,6 @@ function computeDayStatus(dayLog) {
     };
   });
 
-  totalProtein += calcMacros.protein;
-  totalCarbs += calcMacros.carbs;
-  totalFat += calcMacros.fat;
-
   return {
     total_calories: round1(totalCalories),
     totals: {
@@ -470,7 +445,6 @@ function computeDayStatus(dayLog) {
       fat: round1(totalFat),
     },
     categories,
-    junk: { kcal: junkKcal },
   };
 }
 
@@ -1141,14 +1115,68 @@ function renderWeek() {
 const STATUS_LABEL = { active: 'Активно', complete: '✅ Виконано', over: '⚠️ Перевищено' };
 let openCategories = new Set();
 
+// Colored SVG badge per category (replaces the plain emoji glyph). Each
+// entry's stroke is currentColor — the actual color comes from the matching
+// .cat-badge-<key> CSS class (see index.html), so this map only needs to
+// carry the artwork. category_key values come straight from CATEGORIES_META
+// (database.js): garnish, dairy, freebie, protein, veggies, fats, fruits, nuts.
+const CATEGORY_ICON_SVG = {
+  garnish: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="12" y1="21" x2="12" y2="4"/>
+    <path d="M12 6c-2.2-0.3-3.6-2-3.6-2"/><path d="M12 6c2.2-0.3 3.6-2 3.6-2"/>
+    <path d="M12 10.3c-2.2-0.3-3.6-2-3.6-2"/><path d="M12 10.3c2.2-0.3 3.6-2 3.6-2"/>
+    <path d="M12 14.6c-2.2-0.3-3.6-2-3.6-2"/><path d="M12 14.6c2.2-0.3 3.6-2 3.6-2"/>
+  </svg>`,
+  dairy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 2h6v3.2l2 3.3V21a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8.5l2-3.3z"/>
+    <line x1="9" y1="2" x2="15" y2="2"/>
+    <line x1="7.3" y1="12" x2="16.7" y2="12"/>
+  </svg>`,
+  freebie: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="4"/>
+    <line x1="8" y1="8" x2="8" y2="8"/><line x1="16" y1="8" x2="16" y2="8"/>
+    <line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/>
+    <line x1="12" y1="12" x2="12" y2="12"/>
+  </svg>`,
+  protein: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 21c4.4 0 7-3.6 7-8 0-5-4-11-7-11S5 8 5 13c0 4.4 2.6 8 7 8z"/>
+  </svg>`,
+  veggies: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 20c0-8 6-14 15-15-1 9-7 15-15 15z"/>
+    <path d="M6.5 17.5 15 9"/>
+  </svg>`,
+  fats: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3s6 7.5 6 12a6 6 0 0 1-12 0c0-4.5 6-12 6-12z"/>
+  </svg>`,
+  fruits: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 9c-4 0-7 3.1-7 7 0 3 2.2 5 4.8 5 0.8 0 1.4-0.3 2.2-0.3s1.4 0.3 2.2 0.3c2.6 0 4.8-2 4.8-5 0-3.9-3-7-7-7z"/>
+    <path d="M12 9c0-1.8 0.8-3 2.3-3.6"/>
+  </svg>`,
+  nuts: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 10c3.3 0 5.5 2.4 5.5 6 0 3-2 5.5-5.5 5.5S6.5 19 6.5 16c0-3.6 2.2-6 5.5-6z"/>
+    <path d="M7.2 10.2c0.6-2.6 2.4-4.2 4.8-4.2s4.2 1.6 4.8 4.2"/>
+    <line x1="9.5" y1="9.6" x2="9.5" y2="12"/><line x1="14.5" y1="9.6" x2="14.5" y2="12"/>
+  </svg>`,
+};
+// Fallback for any category not in the map above (defensive — e.g. a future
+// CATEGORIES_META addition that hasn't gotten a bespoke icon/color yet).
+const CATEGORY_ICON_FALLBACK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="8.5"/>
+</svg>`;
+
+function categoryIconBadgeHtml(categoryKey) {
+  const svg = CATEGORY_ICON_SVG[categoryKey] || CATEGORY_ICON_FALLBACK;
+  const cls = CATEGORY_ICON_SVG[categoryKey] ? `cat-badge-${categoryKey}` : 'cat-badge-fallback';
+  return `<div class="cat-icon-badge ${cls}">${svg}</div>`;
+}
+
 function renderCategories() {
   const container = document.getElementById('categoriesContainer');
 
   const categoryCardsHtml = STATE.categories
-    // junk_food is registered in CATEGORIES_META so its calories sync/report
-    // correctly (see computeDayStatus), but it has no catalog items and
-    // keeps its own dedicated quick-entry card below instead of an
-    // expandable one here.
+    // junk_food is dead weight now (see JUNK_CATEGORY_KEY comment near the
+    // top of the file) — still returned by computeDayStatus so old server
+    // data keeps working, but it's never rendered.
     .filter((cat) => cat.category_key !== JUNK_CATEGORY_KEY)
     .map((cat) => {
       const isOpen = openCategories.has(cat.category_key);
@@ -1195,7 +1223,7 @@ function renderCategories() {
         <section class="cat-card glass status-${cat.status} ${isOpen ? 'open' : ''}" data-category="${cat.category_key}">
           <div class="cat-header">
             <div class="left">
-              <div class="cat-emoji">${cat.emoji}</div>
+              ${categoryIconBadgeHtml(cat.category_key)}
               <div class="titles">
                 <h3>${escapeHtml(cat.category_name)}</h3>
                 <div class="sub">${Math.round(cat.calories_consumed)} / ${cat.target_calories} ккал</div>
@@ -1222,28 +1250,9 @@ function renderCategories() {
     })
     .join('');
 
-  // Standalone "Погане ЇДЛО" card — direct kcal entry, no items, no expand;
-  // tapping it opens the junk-kcal sheet immediately (see openJunkSheet()).
-  const junkKcal = STATE.junk ? STATE.junk.kcal : 0;
-  const junkCardHtml = `
-    <section class="cat-card glass junk-card" id="junkCard">
-      <div class="cat-header">
-        <div class="left">
-          <div class="cat-emoji">😡</div>
-          <div class="titles">
-            <h3>Погане ЇДЛО</h3>
-            <div class="sub">Мусорні калорії</div>
-          </div>
-        </div>
-        <div class="right">
-          <div class="status-pill junk-pill">${Math.round(junkKcal)} ккал</div>
-        </div>
-      </div>
-    </section>`;
+  container.innerHTML = categoryCardsHtml;
 
-  container.innerHTML = categoryCardsHtml + junkCardHtml;
-
-  container.querySelectorAll('.cat-card:not(.junk-card) .cat-header').forEach((header) => {
+  container.querySelectorAll('.cat-card .cat-header').forEach((header) => {
     header.addEventListener('click', () => {
       const card = header.closest('.cat-card');
       const key = card.dataset.category;
@@ -1267,11 +1276,6 @@ function renderCategories() {
       haptic('impact', 'light');
       openFreebieCustomSheet();
     });
-  });
-
-  document.getElementById('junkCard')?.addEventListener('click', () => {
-    haptic('impact', 'light');
-    openJunkSheet();
   });
 }
 
@@ -1307,29 +1311,24 @@ function computeDayMacros(dayLog) {
     calories += cat.target_calories * categoryRatio;
   }
 
-  const junkKcal = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
-  calories += junkKcal;
-
-  // Custom (non-catalog) entries: "Будь-чого" free-form items and the
-  // Калькулятор's optional П/Ж/В fields — see the FREEBIE_*/CALC_MACROS_KEY
-  // comments near JUNK_KEY above. Folded in here the same way computeDayStatus
+  // "Будь-чого" free-form custom entries — see the FREEBIE_* comments near
+  // JUNK_CATEGORY_KEY above. Folded in here the same way computeDayStatus
   // folds them in, so Statistics matches the live dashboard.
   const freebieCustomKcal = Math.max(0, Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0);
   calories += freebieCustomKcal;
   const freebieCustomMacros = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
-  const calcMacros = readMacrosObj(dayLog, CALC_MACROS_KEY);
-  protein += freebieCustomMacros.protein + calcMacros.protein;
-  carbs += freebieCustomMacros.carbs + calcMacros.carbs;
-  fat += freebieCustomMacros.fat + calcMacros.fat;
+  protein += freebieCustomMacros.protein;
+  carbs += freebieCustomMacros.carbs;
+  fat += freebieCustomMacros.fat;
 
-  return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat), junk: round1(junkKcal) };
+  return { calories: round1(calories), protein: round1(protein), carbs: round1(carbs), fat: round1(fat), freebieCustom: round1(freebieCustomKcal) };
 }
 
 // Per-category calories for an arbitrary day's log — same ratio math as
 // computeDayMacros, just keyed by category instead of summed into one
-// total. Powers the "top calorie sources" breakdown. "Погане ЇДЛО" comes
-// from JUNK_KEY directly (mirrors computeDayStatus's own handling) rather
-// than its target_calories, which is deliberately 0.
+// total. Powers the "top calorie sources" breakdown. junk_food is skipped
+// entirely (see JUNK_CATEGORY_KEY comment above — it's a dead, unused
+// category kept only so old server data doesn't break).
 function computeDayCategoryCalories(dayLog) {
   const byCategory = {};
   for (const cat of CATALOG.categories) {
@@ -1341,7 +1340,6 @@ function computeDayCategoryCalories(dayLog) {
     }
     byCategory[cat.key] = cat.target_calories * categoryRatio;
   }
-  byCategory[JUNK_CATEGORY_KEY] = Math.max(0, Number(dayLog[JUNK_KEY]) || 0);
   // "Будь-чого" custom entries add on top of its catalog-item calories
   // computed above (mirrors computeDayStatus's caloriesConsumed for the
   // same category).
@@ -1381,9 +1379,9 @@ function shiftAnchor(period, anchorDate, direction) {
 }
 
 function getDayChartInfo(date) {
-  if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
+  if (date > TODAY) return { date, isFuture: true, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, freebieCustom: 0 };
   const log = dayLogCache.get(date);
-  if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, junk: 0 };
+  if (!log || !Object.keys(log).length) return { date, isFuture: false, hasData: false, calories: 0, protein: 0, carbs: 0, fat: 0, freebieCustom: 0 };
   const macros = computeDayMacros(log);
   return { date, isFuture: false, hasData: true, categories: computeDayCategoryCalories(log), ...macros };
 }
@@ -1488,17 +1486,17 @@ function fmtKcal(n) {
 
 // Dynamic smart-advice banner: green when the period's average calories sit
 // within the daily limit, amber when they don't — and the amber copy calls
-// out "Погане ЇДЛО" by name specifically when it's the main driver of the
-// overage (>=20% of period calories), otherwise gives a generic overage
-// message rather than misattributing the cause.
+// out ad-hoc "Будь-чого" custom entries by name specifically when they're
+// the main driver of the overage (>=20% of period calories), otherwise
+// gives a generic overage message rather than misattributing the cause.
 function renderAnalyticsInsight(loggedDays, target) {
   const el = document.getElementById('analyticsInsight');
   if (!loggedDays.length) { el.innerHTML = ''; return; }
 
   const totalCalories = loggedDays.reduce((sum, d) => sum + d.calories, 0);
-  const totalJunk = loggedDays.reduce((sum, d) => sum + (d.junk || 0), 0);
+  const totalFreebieCustom = loggedDays.reduce((sum, d) => sum + (d.freebieCustom || 0), 0);
   const avgCalories = totalCalories / loggedDays.length;
-  const junkPct = totalCalories > 0 ? (totalJunk / totalCalories) * 100 : 0;
+  const freebieCustomPct = totalCalories > 0 ? (totalFreebieCustom / totalCalories) * 100 : 0;
 
   let tone, icon, text;
   if (avgCalories <= target) {
@@ -1507,8 +1505,8 @@ function renderAnalyticsInsight(loggedDays, target) {
   } else {
     tone = 'warn'; icon = '⚠️';
     const overBy = fmtKcal(avgCalories - target);
-    text = junkPct >= 20
-      ? `Зверніть увагу: спостерігається систематичний перебір калорій (в середньому на ${overBy} ккал/день) за рахунок «Поганого їдла».`
+    text = freebieCustomPct >= 20
+      ? `Зверніть увагу: спостерігається систематичний перебір калорій (в середньому на ${overBy} ккал/день) за рахунок доданих вручну продуктів у «Будь-чого».`
       : `Зверніть увагу: середній перебір становить ${overBy} ккал/день понад денну норму.`;
   }
 
@@ -1583,14 +1581,13 @@ function renderAnalyticsCategories(loggedDays) {
   const rowsHtml = ranked.map(([key, kcal]) => {
     const meta = catMetaByKey[key];
     const pct = Math.round((kcal / grandTotal) * 100);
-    const isJunk = key === JUNK_CATEGORY_KEY;
     return `
       <div class="category-row">
         <div class="category-top">
           <span class="category-name">${meta ? meta.emoji : '🍽️'} ${meta ? meta.name : key}</span>
           <span class="category-pct">${pct}%</span>
         </div>
-        <div class="category-bar-track"><div class="category-bar-fill ${isJunk ? 'junk' : ''}" style="width:${pct}%"></div></div>
+        <div class="category-bar-track"><div class="category-bar-fill" style="width:${pct}%"></div></div>
       </div>`;
   }).join('');
 
@@ -1956,128 +1953,21 @@ function openLogSheet(productKey) {
   openSheet();
 }
 
-// --- Junk-kcal sheet: "Погане ЇДЛО" — direct kcal entry, no grams, no max ---
-
-const JUNK_QUICK_ADDS = [100, 250, 500];
-
-function openJunkSheet() {
-  sheetEmoji.textContent = '😡';
-  sheetTitle.textContent = 'Погане ЇДЛО';
-  sheetSub.textContent = 'Прямий ввід калорій — не впливає на інші категорії';
-
-  const currentJunk = STATE.junk ? STATE.junk.kcal : 0;
-  const sheetState = { pendingDelta: 0, source: null };
-
-  function render() {
-    const previewTotal = Math.max(0, currentJunk + sheetState.pendingDelta);
-
-    sheetContent.innerHTML = `
-      <div class="sheet-scroll">
-        <div class="current-logged">
-          <span class="label">Залоговано сьогодні</span>
-          <span class="value mono">${fmtNum(currentJunk)} ккал</span>
-        </div>
-
-        <div class="quick-add-label">Швидко додати</div>
-        <div class="quick-add-row">
-          ${JUNK_QUICK_ADDS.map((k) => `
-            <button data-quick="${k}" class="${sheetState.source === 'quick' && sheetState.pendingDelta === k ? 'selected' : ''}">+${k} ккал</button>
-          `).join('')}
-        </div>
-
-        <div class="custom-input-wrap">
-          <div class="custom-input-label">Або введіть точну кількість калорій</div>
-          <div class="custom-input-row">
-            <input type="number" inputmode="decimal" id="customInput" placeholder="напр. 350" value="${sheetState.source === 'custom' && sheetState.pendingDelta ? sheetState.pendingDelta : ''}" />
-            <div class="unit-label">ккал</div>
-          </div>
-        </div>
-
-        ${sheetState.pendingDelta ? `<div class="preview-line">Новий підсумок: <b>${fmtNum(previewTotal)} ккал</b></div>` : ''}
-      </div>
-      <div class="sheet-footer">
-        <button class="confirm-btn" id="confirmBtn" ${sheetState.pendingDelta ? '' : 'disabled'}>Підтвердити</button>
-      </div>
-    `;
-
-    bind();
-  }
-
-  function bind() {
-    sheetContent.querySelectorAll('[data-quick]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        haptic('impact', 'light');
-        const k = Number(btn.dataset.quick);
-        sheetState.pendingDelta = sheetState.source === 'quick' && sheetState.pendingDelta === k ? 0 : k;
-        sheetState.source = sheetState.pendingDelta ? 'quick' : null;
-        render();
-      });
-    });
-
-    const customInput = document.getElementById('customInput');
-    customInput?.addEventListener('input', () => {
-      const val = parseFloat(customInput.value);
-      sheetState.pendingDelta = Number.isFinite(val) && val !== 0 ? val : 0;
-      sheetState.source = sheetState.pendingDelta ? 'custom' : null;
-      updatePreview();
-    });
-
-    const confirmBtn = document.getElementById('confirmBtn');
-    confirmBtn?.addEventListener('click', () => {
-      haptic('impact', 'medium');
-
-      // OPTIMISTIC: mutate in-memory state and re-render instantly.
-      const dayLog = dayLogCache.get(TODAY) || {};
-      dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + sheetState.pendingDelta);
-      setDayLogInMemory(TODAY, dayLog);
-      recomputeAndRender();
-
-      haptic('notification', 'success');
-      closeSheet();
-
-      // BACKGROUND: persist locally + sync to the server.
-      persistAndSync();
-    });
-  }
-
-  function updatePreview() {
-    const confirmBtn = document.getElementById('confirmBtn');
-    if (confirmBtn) confirmBtn.disabled = !sheetState.pendingDelta;
-
-    sheetContent.querySelectorAll('[data-quick]').forEach((btn) => {
-      const k = Number(btn.dataset.quick);
-      btn.classList.toggle('selected', sheetState.source === 'quick' && sheetState.pendingDelta === k);
-    });
-
-    let previewEl = sheetContent.querySelector('.preview-line');
-    const previewTotal = Math.max(0, currentJunk + sheetState.pendingDelta);
-    const previewHtml = sheetState.pendingDelta ? `Новий підсумок: <b>${fmtNum(previewTotal)} ккал</b>` : '';
-    if (previewEl) {
-      if (previewHtml) previewEl.innerHTML = previewHtml;
-      else previewEl.remove();
-    } else if (previewHtml) {
-      const div = document.createElement('div');
-      div.className = 'preview-line';
-      div.innerHTML = previewHtml;
-      sheetContent.querySelector('.sheet-scroll').appendChild(div);
-    }
-  }
-
-  render();
-  openSheet();
-}
-
-// --- КБЖУ calculator sheet: per-100g calories x portion weight -> total
-// kcal, added directly to JUNK_KEY exactly like the quick-add junk sheet
-// above (same optimistic-update + persistAndSync pattern), then closes. ---
+// --- Калькулятор sheet: КБЖУ-on-100g × portion-weight, same math as the
+// "Будь-чого" custom-item sheet below. Logs through the exact same two
+// reserved keys (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) —
+// every quick/custom entry in the app shares this one destination now that
+// "Погане ЇДЛО" is gone, so a Калькулятор entry counts toward "Будь-чого"'s
+// own progress bar as well as the top macro bars and Statistics, exactly
+// like adding a custom item from that category's card would. ---
 
 function openCalculatorSheet() {
+  const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
+
   sheetEmoji.textContent = '🧮';
   sheetTitle.textContent = 'Калькулятор';
   sheetSub.textContent = 'КБЖУ на 100г × вага порції';
 
-  // protein100/fat100/carbs100 are optional — leaving them blank just means
-  // 0g of that macro for the portion, kcal still computes from per100 alone.
   const calcState = { per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
 
   function computedTotalKcal() {
@@ -2102,9 +1992,12 @@ function openCalculatorSheet() {
     const total = computedTotalKcal();
     const macros = computedMacros();
     const hasMacros = macros.protein || macros.fat || macros.carbs;
+    const remaining = freebieCat ? Math.max(0, round1(freebieCat.target_calories - freebieCat.calories_consumed)) : null;
 
     sheetContent.innerHTML = `
       <div class="sheet-scroll">
+        ${remaining !== null ? `<div class="remaining-hint">Залишок бюджету «Будь-чого»: <b>${fmtNum(remaining)} ккал</b></div>` : ''}
+
         <div class="calc-result">
           <div class="calc-result-value mono" id="calcResultValue">${fmtNum(round1(total))}</div>
           <div class="calc-result-label">ккал загалом</div>
@@ -2146,7 +2039,7 @@ function openCalculatorSheet() {
         </div>
       </div>
       <div class="sheet-footer">
-        <button class="confirm-btn" id="calcSubmitBtn" ${total > 0 ? '' : 'disabled'}>Зарахувати в Погане ЇДЛО</button>
+        <button class="confirm-btn" id="calcSubmitBtn" ${total > 0 ? '' : 'disabled'}>Додати до «Будь-чого»</button>
       </div>
     `;
 
@@ -2197,17 +2090,17 @@ function openCalculatorSheet() {
 
       const macros = computedMacros();
 
-      // OPTIMISTIC: same pattern as the junk-kcal quick-add sheet — mutate
+      // OPTIMISTIC: same pattern as every other log sheet — mutate
       // in-memory state and re-render instantly, then persist in the
-      // background without the UI waiting on it. Kcal still goes to
-      // JUNK_KEY as before; the optional macros ride along in
-      // CALC_MACROS_KEY so they reach the top macro bars and Statistics too
-      // (see computeDayStatus/computeDayMacros).
+      // background without the UI waiting on it. Logs into the SAME
+      // reserved keys openFreebieCustomSheet uses (not a separate
+      // Калькулятор-only counter), so both entry points feed one shared
+      // "Будь-чого" custom total.
       const dayLog = dayLogCache.get(TODAY) || {};
-      dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + total);
+      dayLog[FREEBIE_CUSTOM_KCAL_KEY] = Math.max(0, (Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0) + total);
       if (macros.protein || macros.fat || macros.carbs) {
-        const prev = readMacrosObj(dayLog, CALC_MACROS_KEY);
-        dayLog[CALC_MACROS_KEY] = {
+        const prev = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+        dayLog[FREEBIE_CUSTOM_MACROS_KEY] = {
           protein: round1(prev.protein + macros.protein),
           fat: round1(prev.fat + macros.fat),
           carbs: round1(prev.carbs + macros.carbs),
@@ -2259,11 +2152,13 @@ document.getElementById('calcBtn')?.addEventListener('click', () => {
 });
 
 // --- "Будь-чого" custom item sheet: a free-form product not in the
-// catalog. Same per-100g × portion-weight math as the Калькулятор above,
-// but scoped to the "Будь-чого" category's own budget
-// (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) instead of "Погане
-// ЇДЛО", so it counts toward that category's progress bar as well as the
-// top macro bars and Statistics — see computeDayStatus/computeDayMacros. ---
+// catalog. Per-100g × portion-weight math (calories, plus optional
+// protein/fat/carbs), scoped to the "Будь-чого" category's own budget
+// (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) — every quick/custom
+// entry in the app (this sheet, the Калькулятор above, AI Fridge recipes)
+// logs through these same two keys, so it counts toward that category's
+// progress bar as well as the top macro bars and Statistics — see
+// computeDayStatus/computeDayMacros. ---
 
 function openFreebieCustomSheet() {
   const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
@@ -2663,19 +2558,14 @@ async function submitAiFridgeRequest() {
   }
 }
 
-// Adds the recipe's total_calories straight into JUNK_KEY — the same
-// direct-kcal counter the "Погане ЇДЛО" quick-add sheet and the КБЖУ
-// calculator sheet both write to (see openCalculatorSheet's submit handler
-// above, which this mirrors exactly): optimistic in-memory update + instant
-// re-render, then persist/sync to the server in the background without the
-// UI waiting on it.
-//
-// NOTE: only total_calories is logged, not the recipe's protein/fat/carb
-// numbers — JUNK_KEY is a pure kcal counter with no macro fields (see
-// computeDayStatus: junk_food's macros always compute to 0), so this has
-// the exact same limitation the calculator and junk quick-add already have.
-// The recipe's macro breakdown is still shown to the user in the result
-// view; it just isn't separately persisted into the day's macro totals.
+// Adds the recipe straight into "Будь-чого"'s custom-entry keys
+// (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) — the same two keys
+// every other quick/custom entry in the app writes to (see
+// openFreebieCustomSheet's submit handler above, which this mirrors):
+// optimistic in-memory update + instant re-render, then persist/sync to the
+// server in the background without the UI waiting on it. The recipe's own
+// protein/fats/carbs (already shown in the result view) are logged here
+// too, not just total_calories.
 function logAiFridgeRecipe() {
   const r = aiFridgeState.recipe;
   if (!r) return;
@@ -2684,8 +2574,22 @@ function logAiFridgeRecipe() {
 
   haptic('impact', 'medium');
 
+  const macros = {
+    protein: Math.max(0, Number(r.proteins) || 0),
+    fat: Math.max(0, Number(r.fats) || 0),
+    carbs: Math.max(0, Number(r.carbs) || 0),
+  };
+
   const dayLog = dayLogCache.get(TODAY) || {};
-  dayLog[JUNK_KEY] = Math.max(0, (Number(dayLog[JUNK_KEY]) || 0) + kcal);
+  dayLog[FREEBIE_CUSTOM_KCAL_KEY] = Math.max(0, (Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0) + kcal);
+  if (macros.protein || macros.fat || macros.carbs) {
+    const prev = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+    dayLog[FREEBIE_CUSTOM_MACROS_KEY] = {
+      protein: round1(prev.protein + macros.protein),
+      fat: round1(prev.fat + macros.fat),
+      carbs: round1(prev.carbs + macros.carbs),
+    };
+  }
   setDayLogInMemory(TODAY, dayLog);
   recomputeAndRender();
 
