@@ -10,20 +10,23 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --tg-bg: var(--tg-theme-bg-color, #0b0e14);
-    --tg-text: var(--tg-theme-text-color, #f4f5f7);
-    --tg-hint: var(--tg-theme-hint-color, #8b93a7);
-    --tg-button: var(--tg-theme-button-color, #6366f1);
-    --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
-    --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #11151f);
+    --tg-bg: var(--tg-theme-bg-color, #0A0F0C);
+    --tg-text: var(--tg-theme-text-color, #eafbea);
+    --tg-hint: var(--tg-theme-hint-color, #7fa88a);
+    --tg-button: var(--tg-theme-button-color, #22c55e);
+    --tg-button-text: var(--tg-theme-button-text-color, #04120a);
+    --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #0d1712);
 
-    --glass-bg: rgba(255, 255, 255, 0.05);
-    --glass-bg-strong: rgba(255, 255, 255, 0.08);
-    --glass-border: rgba(255, 255, 255, 0.1);
-    --glass-highlight: rgba(255, 255, 255, 0.14);
+    --glass-bg: rgba(74, 222, 128, 0.05);
+    --glass-bg-strong: rgba(74, 222, 128, 0.09);
+    --glass-border: rgba(74, 222, 128, 0.12);
+    --glass-highlight: rgba(74, 222, 128, 0.18);
 
-    --aurora-1: #6366f1;
-    --aurora-2: #22d3ee;
+    /* Bio-Tech / Premium Dark Avocado accent trio, drawn from the logo:
+       deep emerald -> signature leaf green -> bright lime highlight. */
+    --aurora-1: #10b981;
+    --aurora-2: #22c55e;
+    --aurora-3: #4ade80;
 
     --protein-1: #10b981;
     --protein-2: #34d399;
@@ -49,9 +52,9 @@
     --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.07);
     --orb-opacity: 0.4;
     --chart-baseline-color: rgba(255, 255, 255, 0.32);
-    /* Continuous, smooth 2-stop gradient — matches the requested
-       #1e293b -> #0f172a dark slate-navy sweep. */
-    --hero-gradient: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    /* Continuous, smooth 2-stop gradient — deep organic charcoal-green
+       sweep matching the Dark Avocado brand hero background. */
+    --hero-gradient: linear-gradient(135deg, #132219 0%, #0A0F0C 100%);
   }
 
   [data-theme="light"] {
@@ -78,7 +81,11 @@
 
   body {
     margin: 0;
-    background: var(--tg-bg);
+    /* Deep organic charcoal-green brand background, per the Dark Avocado
+       rebrand — replaces the flat theme-driven fill so it reads the same
+       regardless of Telegram theme params. */
+    background: radial-gradient(circle at top, #132219 0%, #0A0F0C 60%, #050806 100%);
+    background-attachment: fixed;
     color: var(--tg-text);
     /* Was 80px — the last card in a category (esp. "Будь-чого") was still
        getting clipped by the fixed bottom nav bar on shorter viewports.
@@ -100,16 +107,16 @@
      modals would render visually underneath this bar instead of over it. */
   /* Premium glassmorphic dark bar — deliberately hardcoded (not the
      theme-driven --tg-secondary-bg/--glass-border tokens) per spec, so it
-     reads the same frosted-slate way in both light and dark theme. */
+     reads the same frosted dark-emerald way in both light and dark theme. */
   .bottom-nav {
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
     display: grid; grid-template-columns: repeat(4, 1fr);
     gap: 2px;
-    padding: 10px 8px max(10px, env(safe-area-inset-bottom));
-    background: rgba(15, 23, 42, 0.85);
+    padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+    background: rgba(10, 15, 12, 0.88);
     -webkit-backdrop-filter: blur(12px);
     backdrop-filter: blur(12px);
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid rgba(74, 222, 128, 0.15);
     box-shadow: 0 -8px 28px rgba(0,0,0,0.28);
   }
   .bottom-nav-btn {
@@ -137,7 +144,7 @@
   .bottom-nav-btn.nav-active { color: var(--aurora-2); }
   .bottom-nav-btn.nav-active .nav-icon svg {
     stroke: var(--aurora-2);
-    filter: drop-shadow(0 0 6px rgba(34,211,238,0.65));
+    filter: drop-shadow(0 0 6px rgba(34,197,94,0.65));
   }
   .bottom-nav-btn.nav-active .nav-label { color: #fff; }
   .bottom-nav-btn.nav-active::before {
@@ -145,7 +152,7 @@
     position: absolute; top: -1px; left: 50%; transform: translateX(-50%);
     width: 22px; height: 2.5px; border-radius: var(--radius-pill);
     background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 0 8px rgba(34,211,238,0.75);
+    box-shadow: 0 0 8px rgba(34,197,94,0.75);
   }
 
   @media (max-width: 340px) {
@@ -171,10 +178,11 @@
   }
 
   .glass {
-    background: var(--glass-bg);
-    -webkit-backdrop-filter: blur(28px) saturate(160%);
-    backdrop-filter: blur(28px) saturate(160%);
-    border: 1px solid var(--glass-border);
+    /* Dark emerald glass per the Dark Avocado brand spec. */
+    background: rgba(18, 28, 22, 0.75);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(74, 222, 128, 0.12);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-card), var(--glass-inset);
   }
@@ -183,7 +191,9 @@
 
   /* ===== HEADER ===== */
 
-  header { padding: 16px 16px 6px; }
+  /* Trimmed to a balanced 12px side margin so the hero card lines up
+     edge-to-edge with the category cards and bottom nav below it. */
+  header { padding: 12px 12px 6px; }
 
   .top-row {
     display: flex;
@@ -196,13 +206,29 @@
   .date-pill { font-size: 11.5px; color: var(--tg-hint); font-weight: 500; margin-top: 1px; }
 
   /* Compact streak indicator, inline with the app name in the header —
-     replaces the old standalone pulsing streak button entirely. */
+     a translucent ember pill with a glowing SVG flame, replacing the old
+     emoji + plain-text treatment entirely. */
   .streak-inline {
-    display: inline-flex; align-items: center; gap: 3px;
-    font-size: 13px; font-weight: 800; color: #fdba74;
+    display: inline-flex; align-items: center; gap: 4px;
+    vertical-align: middle;
+    margin-left: 2px;
+    padding: 3px 9px 3px 7px;
+    border-radius: var(--radius-pill);
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    font-size: 13px; font-weight: 800; color: #fca5a5;
     letter-spacing: 0;
   }
-  .streak-inline.zero { color: var(--tg-hint); }
+  .streak-inline .streak-flame {
+    width: 13px; height: 13px; color: #f87171;
+    filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.75));
+  }
+  .streak-inline.zero {
+    background: var(--glass-bg-strong);
+    border-color: var(--glass-border);
+    color: var(--tg-hint);
+  }
+  .streak-inline.zero .streak-flame { color: var(--tg-hint); filter: none; opacity: 0.6; }
 
   .week-row {
     display: flex; justify-content: space-between; gap: 6px;
@@ -218,18 +244,21 @@
     transition: background 0.3s ease, border-color 0.3s ease;
   }
   .week-day .week-label { font-size: 9px; font-weight: 700; color: var(--tg-hint); text-transform: uppercase; letter-spacing: 0.04em; }
+  /* LED-style indicator: a small crisp dot with its own glow ring, rather
+     than a flat glass chip — reads as an on/off status light per day. */
   .week-day .week-chip {
-    width: 25px; height: 25px; border-radius: 50%;
+    width: 24px; height: 24px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-size: 12px;
-    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
+    font-size: 11px;
+    background: rgba(74, 222, 128, 0.06);
+    border: 1px solid rgba(74, 222, 128, 0.16);
     transition: all 0.3s ease;
   }
-  .week-day.status-success { background: rgba(99,102,241,0.08); border-color: rgba(99,102,241,0.22); }
+  .week-day.status-success { background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.22); }
   .week-day.status-success .week-chip {
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
     border-color: transparent;
-    box-shadow: 0 0 12px rgba(99,102,241,0.4);
+    box-shadow: 0 0 12px rgba(16,185,129,0.5), 0 0 0 1px rgba(74,222,128,0.4);
   }
   /* Neon connecting line bridging consecutive streak days — anchored to
      each day's own bottom edge (not the chip's), so it never depends on
@@ -245,7 +274,7 @@
     transform: translateX(-50%);
     border-radius: var(--radius-pill);
     background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 0 6px rgba(34,211,238,0.55);
+    box-shadow: 0 0 6px rgba(74,222,128,0.6);
   }
   .week-day.status-success.chain-next::after {
     left: 0; width: calc(100% + 6px); transform: none;
@@ -256,18 +285,19 @@
     border-color: transparent;
     box-shadow: 0 0 12px var(--danger-glow);
   }
-  .week-day.is-today { border-color: var(--aurora-2); }
+  /* Glowing neon border marks the active (today) LED slot. */
+  .week-day.is-today { border-color: var(--aurora-3); box-shadow: 0 0 10px rgba(74,222,128,0.25); }
   .week-day.is-today .week-label { color: var(--tg-text); }
-  /* Bright cyan "still open" glow — scoped to today-and-not-yet-logged so
-     it doesn't compete with the success/over gradient glows once today
-     is actually resolved; it's specifically the call-to-action state. */
+  /* "Still open" glow — scoped to today-and-not-yet-logged so it doesn't
+     compete with the success/over gradient glows once today is resolved;
+     it's specifically the call-to-action state. */
   .week-day.is-today.status-unlogged .week-chip {
-    box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 14px rgba(34,211,238,0.5);
+    box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 14px rgba(74,222,128,0.55);
     animation: today-pulse 2.4s ease-in-out infinite;
   }
   @keyframes today-pulse {
-    0%, 100% { box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 10px rgba(34,211,238,0.38); }
-    50% { box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 18px rgba(34,211,238,0.7); }
+    0%, 100% { box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 10px rgba(74,222,128,0.4); }
+    50% { box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 18px rgba(74,222,128,0.75); }
   }
 
 
@@ -295,8 +325,8 @@
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(circle at 25% 15%, rgba(99,102,241,0.22), transparent 55%),
-      radial-gradient(circle at 80% 75%, rgba(34,211,238,0.16), transparent 55%);
+      radial-gradient(circle at 25% 15%, rgba(16,185,129,0.22), transparent 55%),
+      radial-gradient(circle at 80% 75%, rgba(74,222,128,0.16), transparent 55%);
     pointer-events: none;
   }
 
@@ -308,7 +338,7 @@
   .ring-wrap::before {
     content: '';
     position: absolute; inset: -16px;
-    background: radial-gradient(circle, rgba(99,102,241,0.22), transparent 68%);
+    background: radial-gradient(circle, rgba(16,185,129,0.24), transparent 68%);
     filter: blur(18px);
     z-index: 0;
   }
@@ -322,7 +352,7 @@
     stroke-dasharray: 464.9;
     stroke-dashoffset: 464.9;
     transition: stroke-dashoffset 0.7s cubic-bezier(.2,.8,.2,1), stroke 0.3s ease;
-    filter: drop-shadow(0 0 10px rgba(99,102,241,0.55));
+    filter: drop-shadow(0 0 10px rgba(16,185,129,0.55));
   }
   .ring-fill.over { filter: drop-shadow(0 0 12px var(--danger-glow)); }
   .ring-center {
@@ -355,8 +385,12 @@
 
   .macros-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; z-index: 2; }
   .macro { display: flex; flex-direction: column; gap: 5px; }
-  .macro .macro-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 10.5px; }
-  .macro .macro-name { color: var(--tg-hint); font-weight: 600; }
+  .macro .macro-top { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; }
+  .macro .macro-name { display: inline-flex; align-items: center; gap: 4px; color: var(--tg-hint); font-weight: 600; }
+  .macro .macro-icon { width: 12px; height: 12px; flex-shrink: 0; }
+  .macro .macro-icon.icon-protein { color: var(--protein-2); }
+  .macro .macro-icon.icon-fat { color: var(--fat-2); }
+  .macro .macro-icon.icon-carbs { color: var(--carbs-2); }
   .macro .macro-val { font-weight: 700; font-size: 11px; }
   .macro-track { height: 5px; border-radius: var(--radius-pill); background: var(--glass-bg); overflow: hidden; }
   .macro-fill { height: 100%; border-radius: var(--radius-pill); width: 0%; transition: width 0.6s cubic-bezier(.2,.8,.2,1); }
@@ -366,7 +400,9 @@
 
   /* ===== CATEGORY CARDS ===== */
 
-  main { padding: 16px 16px 0; display: flex; flex-direction: column; gap: 10px; }
+  /* Balanced 12px side margin (matches header/nav) so category cards
+     read edge-to-edge with the rest of the shell, full-width top to bottom. */
+  main { padding: 12px 12px 0; display: flex; flex-direction: column; gap: 10px; }
 
   /* "Горіхи та насіння" is the final card in the list — this needs to be
      generous enough that even the expanded card scrolls fully clear above
@@ -539,7 +575,7 @@
     border-color: transparent;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
     color: #fff;
-    box-shadow: 0 4px 14px rgba(99,102,241,0.35);
+    box-shadow: 0 4px 14px rgba(16,185,129,0.35);
   }
   .fill-remaining-btn {
     width: 100%; padding: 12px 0; margin-bottom: 16px;
@@ -619,7 +655,7 @@
     width: 100%; padding: 15px; border: none; border-radius: 16px;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
     font-size: 15px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 8px 24px rgba(99,102,241,0.35);
+    box-shadow: 0 8px 24px rgba(16,185,129,0.35);
     transition: transform 0.15s ease;
   }
   .confirm-btn:active { transform: scale(0.97); }
@@ -683,7 +719,7 @@
     width: 100%; padding: 15px; border: none; border-radius: 16px;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
     font-size: 15px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 8px 24px rgba(99,102,241,0.35);
+    box-shadow: 0 8px 24px rgba(16,185,129,0.35);
   }
   .lock-submit-btn:active { transform: scale(0.97); }
   .lock-submit-btn:disabled { opacity: 0.5; }
@@ -711,7 +747,7 @@
     top: 4px; bottom: 4px; left: 4px;
     border-radius: var(--radius-pill);
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 4px 14px rgba(99,102,241,0.4);
+    box-shadow: 0 4px 14px rgba(16,185,129,0.4);
     transition: transform 0.3s cubic-bezier(.2,.8,.2,1), width 0.3s cubic-bezier(.2,.8,.2,1);
     z-index: 0;
   }
@@ -1039,8 +1075,8 @@
 <svg width="0" height="0" style="position:absolute">
   <defs>
     <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#6366f1" />
-      <stop offset="100%" stop-color="#22d3ee" />
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#4ade80" />
     </linearGradient>
   </defs>
 </svg>
@@ -1060,7 +1096,14 @@
   <div class="top-row">
     <div class="brand">
       <div>
-        <h1>Eatko <span class="streak-inline" id="streakInline">🔥 0</span></h1>
+        <h1>Eatko
+          <span class="streak-inline zero" id="streakInline">
+            <svg class="streak-flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2c1 3-2 4.5-2 7.5a3 3 0 0 0 6 0c0-1-.3-1.8-.8-2.6.9.4 2.8 1.9 2.8 5.1a6 6 0 0 1-12 0c0-4 2.5-6.2 3.5-8.5.6-1.4 1.5-1.5 2.5-1.5Z" fill="currentColor" stroke="none"/>
+            </svg>
+            <span class="streak-num" id="streakNum">0</span>
+          </span>
+        </h1>
         <div class="date-pill" id="dateLabel"></div>
       </div>
     </div>
@@ -1084,15 +1127,15 @@
 
     <div class="macros-row">
       <div class="macro">
-        <div class="macro-top"><span class="macro-name">🍗 Білки</span><span class="macro-val mono" id="proteinVal">0/0г</span></div>
+        <div class="macro-top"><span class="macro-name"><svg class="macro-icon icon-protein" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 15c3.5-3.5 5.5-8 3-10.5-2.5-2.5-7 0-9.5 3.5C6 10.5 4 15 4 18a2 2 0 0 0 2 2c3 0 7.5-2 9-4.5"/><path d="M9 15l-4.5 4.5"/><circle cx="15.5" cy="8.5" r="1.5" fill="currentColor" stroke="none"/></svg>Білки</span><span class="macro-val mono" id="proteinVal">0/0г</span></div>
         <div class="macro-track"><div class="macro-fill protein" id="proteinFill"></div></div>
       </div>
       <div class="macro">
-        <div class="macro-top"><span class="macro-name">🥑 Жири</span><span class="macro-val mono" id="fatVal">0/0г</span></div>
+        <div class="macro-top"><span class="macro-name"><svg class="macro-icon icon-fat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c2 2.5 5 4 5 8.5A5 5 0 0 1 7 11.5C7 8.5 8.5 6.5 12 3Z"/><path d="M8.5 15.5a5 5 0 0 0 7 0"/></svg>Жири</span><span class="macro-val mono" id="fatVal">0/0г</span></div>
         <div class="macro-track"><div class="macro-fill fat" id="fatFill"></div></div>
       </div>
       <div class="macro">
-        <div class="macro-top"><span class="macro-name">🌾 Вуглеводи</span><span class="macro-val mono" id="carbsVal">0/0г</span></div>
+        <div class="macro-top"><span class="macro-name"><svg class="macro-icon icon-carbs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20"/><path d="M12 4c-1.5 0-2.5 1-4 1S5 4 5 4s0 2 1.5 3S9 8 9 8s-1 1-1 2.5S9 13 9 13s-1.5 0-2.5 1S5 17 5 17s2 0 3.5-1 2.5-1 2.5-1"/><path d="M12 4c1.5 0 2.5 1 4 1s3-1 3-1-0 2-1.5 3S15 8 15 8s1 1 1 2.5-1 2.5-1 2.5 1.5 0 2.5 1 2.5 3 2.5 3-2 0-3.5-1-2.5-1-2.5-1"/></svg>Вуглеводи</span><span class="macro-val mono" id="carbsVal">0/0г</span></div>
         <div class="macro-track"><div class="macro-fill carbs" id="carbsFill"></div></div>
       </div>
     </div>
