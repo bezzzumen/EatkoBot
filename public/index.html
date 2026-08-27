@@ -10,21 +10,21 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --tg-bg: var(--tg-theme-bg-color, #0A0F0C);
-    --tg-text: var(--tg-theme-text-color, #eafbea);
-    --tg-hint: var(--tg-theme-hint-color, #7fa88a);
+    --tg-bg: var(--tg-theme-bg-color, #F8FAFC);
+    --tg-text: var(--tg-theme-text-color, #0F172A);
+    --tg-hint: var(--tg-theme-hint-color, #64748B);
     --tg-button: var(--tg-theme-button-color, #22c55e);
-    --tg-button-text: var(--tg-theme-button-text-color, #04120a);
-    --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #0d1712);
+    --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+    --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #ffffff);
 
-    --glass-bg: rgba(74, 222, 128, 0.05);
-    --glass-bg-strong: rgba(74, 222, 128, 0.09);
-    --glass-border: rgba(74, 222, 128, 0.12);
-    --glass-highlight: rgba(74, 222, 128, 0.18);
+    --glass-bg: rgba(15, 23, 42, 0.03);
+    --glass-bg-strong: rgba(15, 23, 42, 0.05);
+    --glass-border: #E2E8F0;
+    --glass-highlight: rgba(15, 23, 42, 0.08);
 
-    /* Bio-Tech / Premium Dark Avocado accent trio, drawn from the logo:
-       deep emerald -> signature leaf green -> bright lime highlight. */
-    --aurora-1: #10b981;
+    /* Light Premium Minimalist / Light Avocado accent pair, from the logo:
+       deep leaf green -> signature glowing avocado green. */
+    --aurora-1: #16a34a;
     --aurora-2: #22c55e;
     --aurora-3: #4ade80;
 
@@ -35,39 +35,42 @@
     --carbs-1: #06b6d4;
     --carbs-2: #22d3ee;
 
-    --success: #34d399;
-    --success-glow: rgba(52, 211, 153, 0.45);
-    --warning: #fbbf24;
-    --warning-glow: rgba(251, 191, 36, 0.4);
-    --danger: #ff453a;
-    --danger-glow: rgba(255, 69, 58, 0.4);
+    --success: #16a34a;
+    --success-glow: rgba(22, 163, 74, 0.28);
+    --warning: #d97706;
+    --warning-glow: rgba(217, 119, 6, 0.25);
+    --danger: #dc2626;
+    --danger-glow: rgba(220, 38, 38, 0.25);
 
-    --radius-lg: 24px;
-    --radius-md: 20px;
-    --radius-sm: 14px;
+    --radius-lg: 18px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
     --radius-pill: 999px;
 
-    --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.35);
-    --shadow-sheet: 0 -20px 60px rgba(0, 0, 0, 0.5);
-    --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.07);
-    --orb-opacity: 0.4;
-    --chart-baseline-color: rgba(255, 255, 255, 0.32);
-    /* Continuous, smooth 2-stop gradient — deep organic charcoal-green
-       sweep matching the Dark Avocado brand hero background. */
-    --hero-gradient: linear-gradient(135deg, #132219 0%, #0A0F0C 100%);
+    --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+    --shadow-sheet: 0 -16px 40px rgba(15, 23, 42, 0.1);
+    --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    --orb-opacity: 0.12;
+    --chart-baseline-color: rgba(15, 23, 42, 0.14);
+    /* Soft white sheen — matches the "pure white card" brief while still
+       giving the hero its own subtle lift off the page background. */
+    --hero-gradient: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
   }
 
+  /* Telegram may still report a 'light' colorScheme explicitly — keep this
+     branch in lockstep with :root so the app always renders the same
+     Light Avocado design regardless of which branch matches. */
   [data-theme="light"] {
-    --glass-bg: rgba(255, 255, 255, 0.5);
-    --glass-bg-strong: rgba(255, 255, 255, 0.68);
-    --glass-border: rgba(20, 20, 30, 0.08);
-    --glass-highlight: rgba(20, 20, 30, 0.12);
-    --shadow-card: 0 8px 24px rgba(20, 20, 30, 0.07);
-    --shadow-sheet: 0 -16px 40px rgba(20, 20, 30, 0.1);
+    --glass-bg: rgba(15, 23, 42, 0.03);
+    --glass-bg-strong: rgba(15, 23, 42, 0.05);
+    --glass-border: #E2E8F0;
+    --glass-highlight: rgba(15, 23, 42, 0.08);
+    --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+    --shadow-sheet: 0 -16px 40px rgba(15, 23, 42, 0.1);
     --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-    --orb-opacity: 0.22;
-    --chart-baseline-color: rgba(20, 20, 30, 0.26);
-    --hero-gradient: linear-gradient(135deg, #eef1fb 0%, #dfe4f5 100%);
+    --orb-opacity: 0.12;
+    --chart-baseline-color: rgba(15, 23, 42, 0.14);
+    --hero-gradient: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
   }
 
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -81,12 +84,9 @@
 
   body {
     margin: 0;
-    /* Deep organic charcoal-green brand background, per the Dark Avocado
-       rebrand — replaces the flat theme-driven fill so it reads the same
-       regardless of Telegram theme params. */
-    background: radial-gradient(circle at top, #132219 0%, #0A0F0C 60%, #050806 100%);
-    background-attachment: fixed;
-    color: var(--tg-text);
+    /* Ultra-clean light premium background, per the Light Avocado rebrand. */
+    background: #F8FAFC;
+    color: #0F172A;
     /* Was 80px — the last card in a category (esp. "Будь-чого") was still
        getting clipped by the fixed bottom nav bar on shorter viewports.
        110px gives real clearance so the last item always scrolls fully
@@ -105,35 +105,35 @@
      while it's visible (sheet overlays, toast, the invite-code lock
      screen) has its own z-index bumped above 1000 too, below — otherwise
      modals would render visually underneath this bar instead of over it. */
-  /* Premium glassmorphic dark bar — deliberately hardcoded (not the
+  /* Premium translucent white bar — deliberately hardcoded (not the
      theme-driven --tg-secondary-bg/--glass-border tokens) per spec, so it
-     reads the same frosted dark-emerald way in both light and dark theme. */
+     reads the same frosted light-avocado way regardless of Telegram theme. */
   .bottom-nav {
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
     display: grid; grid-template-columns: repeat(4, 1fr);
     gap: 2px;
     padding: 10px 12px max(10px, env(safe-area-inset-bottom));
-    background: rgba(10, 15, 12, 0.88);
+    background: rgba(255, 255, 255, 0.9);
     -webkit-backdrop-filter: blur(12px);
     backdrop-filter: blur(12px);
-    border-top: 1px solid rgba(74, 222, 128, 0.15);
-    box-shadow: 0 -8px 28px rgba(0,0,0,0.28);
+    border-top: 1px solid #E2E8F0;
+    box-shadow: 0 -8px 28px rgba(15, 23, 42, 0.06);
   }
   .bottom-nav-btn {
     position: relative;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 4px; min-height: 52px; padding: 7px 2px;
     background: transparent; border: none; border-radius: 14px;
-    color: rgba(255, 255, 255, 0.55);
+    color: #94A3B8;
     cursor: pointer;
     transition: transform 0.15s ease, background 0.2s ease, color 0.2s ease;
   }
-  .bottom-nav-btn:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.06); }
+  .bottom-nav-btn:active { transform: scale(0.92); background: rgba(15, 23, 42, 0.04); }
   .bottom-nav-btn .nav-icon { display: flex; align-items: center; justify-content: center; line-height: 1; }
   .bottom-nav-btn .nav-icon svg { width: 21px; height: 21px; stroke: currentColor; transition: stroke 0.2s ease, filter 0.2s ease; }
   .bottom-nav-btn .nav-label {
     font-size: 10px; font-weight: 700; line-height: 1;
-    white-space: nowrap; color: rgba(255, 255, 255, 0.62);
+    white-space: nowrap; color: #94A3B8;
     letter-spacing: 0.01em;
     transition: color 0.2s ease;
   }
@@ -141,18 +141,18 @@
   /* Active tab: subtle glowing accent indicator (top hairline) + brighter
      icon/label — toggled in JS while that tab's sheet/overlay is open,
      since these are modals rather than persistent routed views. */
-  .bottom-nav-btn.nav-active { color: var(--aurora-2); }
+  .bottom-nav-btn.nav-active { color: var(--aurora-1); }
   .bottom-nav-btn.nav-active .nav-icon svg {
-    stroke: var(--aurora-2);
-    filter: drop-shadow(0 0 6px rgba(34,197,94,0.65));
+    stroke: var(--aurora-1);
+    filter: drop-shadow(0 0 5px rgba(34,197,94,0.4));
   }
-  .bottom-nav-btn.nav-active .nav-label { color: #fff; }
+  .bottom-nav-btn.nav-active .nav-label { color: #0F172A; }
   .bottom-nav-btn.nav-active::before {
     content: '';
     position: absolute; top: -1px; left: 50%; transform: translateX(-50%);
     width: 22px; height: 2.5px; border-radius: var(--radius-pill);
     background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 0 8px rgba(34,197,94,0.75);
+    box-shadow: 0 0 8px rgba(34,197,94,0.55);
   }
 
   @media (max-width: 340px) {
@@ -178,13 +178,11 @@
   }
 
   .glass {
-    /* Dark emerald glass per the Dark Avocado brand spec. */
-    background: rgba(18, 28, 22, 0.75);
-    -webkit-backdrop-filter: blur(16px) saturate(160%);
-    backdrop-filter: blur(16px) saturate(160%);
-    border: 1px solid rgba(74, 222, 128, 0.12);
+    /* Pure white card, per the Light Avocado brand spec. */
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-card), var(--glass-inset);
   }
 
   button { font-family: inherit; }
@@ -214,14 +212,14 @@
     margin-left: 2px;
     padding: 3px 9px 3px 7px;
     border-radius: var(--radius-pill);
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    font-size: 13px; font-weight: 800; color: #fca5a5;
+    background: rgba(220, 38, 38, 0.1);
+    border: 1px solid rgba(220, 38, 38, 0.25);
+    font-size: 13px; font-weight: 800; color: #dc2626;
     letter-spacing: 0;
   }
   .streak-inline .streak-flame {
-    width: 13px; height: 13px; color: #f87171;
-    filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.75));
+    width: 13px; height: 13px; color: #ef4444;
+    filter: drop-shadow(0 0 3px rgba(220, 38, 38, 0.4));
   }
   .streak-inline.zero {
     background: var(--glass-bg-strong);
@@ -254,11 +252,11 @@
     border: 1px solid rgba(74, 222, 128, 0.16);
     transition: all 0.3s ease;
   }
-  .week-day.status-success { background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.22); }
+  .week-day.status-success { background: rgba(22,163,74,0.08); border-color: rgba(22,163,74,0.22); }
   .week-day.status-success .week-chip {
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
     border-color: transparent;
-    box-shadow: 0 0 12px rgba(16,185,129,0.5), 0 0 0 1px rgba(74,222,128,0.4);
+    box-shadow: 0 0 12px rgba(22,163,74,0.5), 0 0 0 1px rgba(34,197,94,0.4);
   }
   /* Neon connecting line bridging consecutive streak days — anchored to
      each day's own bottom edge (not the chip's), so it never depends on
@@ -274,30 +272,30 @@
     transform: translateX(-50%);
     border-radius: var(--radius-pill);
     background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 0 6px rgba(74,222,128,0.6);
+    box-shadow: 0 0 6px rgba(34,197,94,0.6);
   }
   .week-day.status-success.chain-next::after {
     left: 0; width: calc(100% + 6px); transform: none;
   }
-  .week-day.status-over { background: rgba(255,69,58,0.06); border-color: rgba(255,69,58,0.2); }
+  .week-day.status-over { background: rgba(220,38,38,0.06); border-color: rgba(220,38,38,0.2); }
   .week-day.status-over .week-chip {
     background: linear-gradient(135deg, var(--danger), var(--warning));
     border-color: transparent;
     box-shadow: 0 0 12px var(--danger-glow);
   }
-  /* Glowing neon border marks the active (today) LED slot. */
-  .week-day.is-today { border-color: var(--aurora-3); box-shadow: 0 0 10px rgba(74,222,128,0.25); }
+  /* Glowing green border marks the active (today) LED slot. */
+  .week-day.is-today { border-color: var(--aurora-2); box-shadow: 0 0 8px rgba(34,197,94,0.22); }
   .week-day.is-today .week-label { color: var(--tg-text); }
   /* "Still open" glow — scoped to today-and-not-yet-logged so it doesn't
      compete with the success/over gradient glows once today is resolved;
      it's specifically the call-to-action state. */
   .week-day.is-today.status-unlogged .week-chip {
-    box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 14px rgba(74,222,128,0.55);
+    box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 12px rgba(34,197,94,0.4);
     animation: today-pulse 2.4s ease-in-out infinite;
   }
   @keyframes today-pulse {
-    0%, 100% { box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 10px rgba(74,222,128,0.4); }
-    50% { box-shadow: 0 0 0 1.5px var(--aurora-3), 0 0 18px rgba(74,222,128,0.75); }
+    0%, 100% { box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 8px rgba(34,197,94,0.3); }
+    50% { box-shadow: 0 0 0 1.5px var(--aurora-2), 0 0 14px rgba(34,197,94,0.55); }
   }
 
 
@@ -325,8 +323,8 @@
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(circle at 25% 15%, rgba(16,185,129,0.22), transparent 55%),
-      radial-gradient(circle at 80% 75%, rgba(74,222,128,0.16), transparent 55%);
+      radial-gradient(circle at 25% 15%, rgba(22,163,74,0.22), transparent 55%),
+      radial-gradient(circle at 80% 75%, rgba(34,197,94,0.16), transparent 55%);
     pointer-events: none;
   }
 
@@ -338,7 +336,7 @@
   .ring-wrap::before {
     content: '';
     position: absolute; inset: -16px;
-    background: radial-gradient(circle, rgba(16,185,129,0.24), transparent 68%);
+    background: radial-gradient(circle, rgba(22,163,74,0.24), transparent 68%);
     filter: blur(18px);
     z-index: 0;
   }
@@ -352,7 +350,7 @@
     stroke-dasharray: 464.9;
     stroke-dashoffset: 464.9;
     transition: stroke-dashoffset 0.7s cubic-bezier(.2,.8,.2,1), stroke 0.3s ease;
-    filter: drop-shadow(0 0 10px rgba(16,185,129,0.55));
+    filter: drop-shadow(0 0 10px rgba(22,163,74,0.55));
   }
   .ring-fill.over { filter: drop-shadow(0 0 12px var(--danger-glow)); }
   .ring-center {
@@ -400,16 +398,26 @@
 
   /* ===== CATEGORY CARDS ===== */
 
-  /* Balanced 12px side margin (matches header/nav) so category cards
-     read edge-to-edge with the rest of the shell, full-width top to bottom. */
-  main { padding: 12px 12px 0; display: flex; flex-direction: column; gap: 10px; }
+  /* Cards manage their own horizontal margin below (see .cat-card), so
+     main only needs top padding — this guarantees a consistent, explicit
+     12px side gutter for every category card regardless of flex stretch
+     behavior, rather than relying on it implicitly via padding here. */
+  main { padding: 12px 0 0; display: flex; flex-direction: column; gap: 10px; }
 
-  /* "Горіхи та насіння" is the final card in the list — this needs to be
-     generous enough that even the expanded card scrolls fully clear above
-     the fixed bottom nav bar (see .bottom-nav's own height + blur). */
-  #categoriesContainer { padding-bottom: calc(140px + env(safe-area-inset-bottom)) !important; }
-
-  .cat-card { overflow: hidden; transition: opacity 0.3s ease; }
+  /* "Горіхи та насіння" is the final card in the list — needs enough
+     clearance to scroll fully clear above the fixed bottom nav bar, but
+     not so much that a large empty void is left beneath it. */
+  #categoriesContainer { padding-bottom: calc(90px + env(safe-area-inset-bottom)) !important; }
+  .cat-card {
+    overflow: hidden; transition: opacity 0.3s ease;
+    /* Explicit width + auto margin (rather than relying on flex stretch
+       inside main's padding) so every card gets the same balanced 12px
+       side gutter — full-width edge-to-edge with the hero card and nav
+       above/below it, with no drift from nested layout quirks. */
+    width: calc(100% - 24px);
+    margin: 0 auto 10px auto;
+  }
+  .cat-card:last-child { margin-bottom: 0; }
   .cat-card.status-complete { opacity: 0.7; }
 
   .cat-header {
@@ -432,16 +440,34 @@
     color: var(--tg-hint);
   }
   .cat-icon-badge svg { width: 20px; height: 20px; }
+  /* Compact variant for inline use next to text (e.g. the Statistics
+     "ТОП ДЖЕРЕЛ КАЛОРІЙ" list rows) rather than as a standalone card icon. */
+  .cat-icon-badge.cat-icon-badge-sm { width: 22px; height: 22px; border-radius: 8px; }
+  .cat-icon-badge.cat-icon-badge-sm svg { width: 12px; height: 12px; }
 
-  .cat-badge-garnish   { background: rgba(245, 185, 66, 0.16);  border-color: rgba(245, 185, 66, 0.4);  color: #f5b942; box-shadow: 0 0 14px rgba(245, 185, 66, 0.22); }
-  .cat-badge-dairy     { background: rgba(56, 189, 248, 0.16);  border-color: rgba(56, 189, 248, 0.4);  color: #38bdf8; box-shadow: 0 0 14px rgba(56, 189, 248, 0.22); }
-  .cat-badge-freebie   { background: rgba(236, 72, 153, 0.16);  border-color: rgba(236, 72, 153, 0.4);  color: #ec4899; box-shadow: 0 0 14px rgba(236, 72, 153, 0.22); }
-  .cat-badge-protein   { background: rgba(244, 63, 94, 0.16);   border-color: rgba(244, 63, 94, 0.4);   color: #fb7185; box-shadow: 0 0 14px rgba(244, 63, 94, 0.22); }
-  .cat-badge-veggies   { background: rgba(34, 197, 94, 0.16);   border-color: rgba(34, 197, 94, 0.4);   color: #4ade80; box-shadow: 0 0 14px rgba(34, 197, 94, 0.22); }
-  .cat-badge-fats      { background: rgba(132, 204, 22, 0.16);  border-color: rgba(132, 204, 22, 0.4);  color: #a3e635; box-shadow: 0 0 14px rgba(132, 204, 22, 0.22); }
-  .cat-badge-fruits    { background: rgba(168, 85, 247, 0.16);  border-color: rgba(168, 85, 247, 0.4);  color: #c084fc; box-shadow: 0 0 14px rgba(168, 85, 247, 0.22); }
-  .cat-badge-nuts      { background: rgba(249, 115, 22, 0.16);  border-color: rgba(249, 115, 22, 0.4);  color: #fb923c; box-shadow: 0 0 14px rgba(249, 115, 22, 0.22); }
+  /* Darker, more saturated per-category tones than the dark-theme originals
+     — pastel strokes read fine on translucent-dark badges but wash out
+     against the new white cards, so these are shifted a step deeper while
+     keeping the same soft-tint background/border formula. */
+  .cat-badge-garnish   { background: rgba(180, 83, 9, 0.12);   border-color: rgba(180, 83, 9, 0.32);   color: #b45309; box-shadow: 0 0 10px rgba(180, 83, 9, 0.16); }
+  .cat-badge-dairy     { background: rgba(2, 132, 199, 0.12);  border-color: rgba(2, 132, 199, 0.32);  color: #0284c7; box-shadow: 0 0 10px rgba(2, 132, 199, 0.16); }
+  .cat-badge-freebie   { background: rgba(219, 39, 119, 0.12); border-color: rgba(219, 39, 119, 0.32); color: #db2777; box-shadow: 0 0 10px rgba(219, 39, 119, 0.16); }
+  .cat-badge-protein   { background: rgba(225, 29, 72, 0.12);  border-color: rgba(225, 29, 72, 0.32);  color: #e11d48; box-shadow: 0 0 10px rgba(225, 29, 72, 0.16); }
+  .cat-badge-veggies   { background: rgba(22, 163, 74, 0.12);  border-color: rgba(22, 163, 74, 0.32);  color: #16a34a; box-shadow: 0 0 10px rgba(22, 163, 74, 0.16); }
+  .cat-badge-fats      { background: rgba(101, 163, 13, 0.12); border-color: rgba(101, 163, 13, 0.32); color: #65a30d; box-shadow: 0 0 10px rgba(101, 163, 13, 0.16); }
+  .cat-badge-fruits    { background: rgba(147, 51, 234, 0.12); border-color: rgba(147, 51, 234, 0.32); color: #9333ea; box-shadow: 0 0 10px rgba(147, 51, 234, 0.16); }
+  .cat-badge-nuts      { background: rgba(234, 88, 12, 0.12);  border-color: rgba(234, 88, 12, 0.32);  color: #ea580c; box-shadow: 0 0 10px rgba(234, 88, 12, 0.16); }
   .cat-badge-fallback  { background: var(--glass-bg-strong); border-color: var(--glass-border); color: var(--tg-hint); }
+  /* Sheet-title variant of the badges above, sized for the modal header
+     icon slot (see .sheet-header .sheet-emoji). */
+  .sheet-emoji.cat-badge-garnish,
+  .sheet-emoji.cat-badge-dairy,
+  .sheet-emoji.cat-badge-freebie,
+  .sheet-emoji.cat-badge-protein,
+  .sheet-emoji.cat-badge-veggies,
+  .sheet-emoji.cat-badge-fats,
+  .sheet-emoji.cat-badge-fruits,
+  .sheet-emoji.cat-badge-nuts { box-shadow: none; }
 
   .cat-header .titles { min-width: 0; }
   .cat-header .titles h3 { margin: 0; font-size: 14.5px; font-weight: 700; }
@@ -453,7 +479,7 @@
     white-space: nowrap;
   }
   .status-pill.complete { background: rgba(52,211,153,0.16); border: 1px solid rgba(52,211,153,0.4); color: var(--success); box-shadow: 0 0 10px var(--success-glow); }
-  .status-pill.over { background: rgba(255,69,58,0.16); border: 1px solid rgba(255,69,58,0.45); color: var(--danger); box-shadow: 0 0 10px var(--danger-glow); }
+  .status-pill.over { background: rgba(220,38,38,0.12); border: 1px solid rgba(220,38,38,0.35); color: var(--danger); box-shadow: 0 0 10px var(--danger-glow); }
 
   /* Minimal plus icon replacing the old bulky "Активно" pill for
      categories still open to logging — a lighter, more premium affordance. */
@@ -533,6 +559,13 @@
     background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
     display: flex; align-items: center; justify-content: center; font-size: 17px;
   }
+  /* SVG icon sizing for modal titles (replaces the old plain emoji glyphs).
+     Category-specific sheets add a cat-badge-<key> class (see the shared
+     .cat-badge-* palette below) so the title icon matches that category's
+     own colored badge exactly; :not() keeps this generic sizing rule from
+     fighting that variant's own background/border. */
+  .sheet-header .sheet-emoji svg { width: 18px; height: 18px; }
+  .sheet-header .sheet-emoji:not([class*="cat-badge-"]) svg { stroke: var(--tg-text); }
   .sheet-header h2 { margin: 0; font-size: 16.5px; font-weight: 700; }
   .sheet-header .sub { color: var(--tg-hint); font-size: 12px; margin-top: 2px; font-weight: 500; }
   .sheet-close {
@@ -575,7 +608,7 @@
     border-color: transparent;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
     color: #fff;
-    box-shadow: 0 4px 14px rgba(16,185,129,0.35);
+    box-shadow: 0 4px 14px rgba(22,163,74,0.35);
   }
   .fill-remaining-btn {
     width: 100%; padding: 12px 0; margin-bottom: 16px;
@@ -655,7 +688,7 @@
     width: 100%; padding: 15px; border: none; border-radius: 16px;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
     font-size: 15px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 8px 24px rgba(16,185,129,0.35);
+    box-shadow: 0 8px 24px rgba(22,163,74,0.35);
     transition: transform 0.15s ease;
   }
   .confirm-btn:active { transform: scale(0.97); }
@@ -719,7 +752,7 @@
     width: 100%; padding: 15px; border: none; border-radius: 16px;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
     font-size: 15px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 8px 24px rgba(16,185,129,0.35);
+    box-shadow: 0 8px 24px rgba(22,163,74,0.35);
   }
   .lock-submit-btn:active { transform: scale(0.97); }
   .lock-submit-btn:disabled { opacity: 0.5; }
@@ -747,7 +780,7 @@
     top: 4px; bottom: 4px; left: 4px;
     border-radius: var(--radius-pill);
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2));
-    box-shadow: 0 4px 14px rgba(16,185,129,0.4);
+    box-shadow: 0 4px 14px rgba(22,163,74,0.4);
     transition: transform 0.3s cubic-bezier(.2,.8,.2,1), width 0.3s cubic-bezier(.2,.8,.2,1);
     z-index: 0;
   }
@@ -846,15 +879,13 @@
   }
   .insight-card .insight-icon { font-size: 16px; flex-shrink: 0; line-height: 1.3; }
   .insight-card.good {
-    background: rgba(52,211,153,0.1); border-color: rgba(52,211,153,0.3);
-    color: #d1fae5;
+    background: rgba(22,163,74,0.1); border-color: rgba(22,163,74,0.28);
+    color: #065f46;
   }
   .insight-card.warn {
-    background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.32);
-    color: #fef3c7;
+    background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.3);
+    color: #78350f;
   }
-  [data-theme="light"] .insight-card.good { color: #065f46; }
-  [data-theme="light"] .insight-card.warn { color: #78350f; }
 
   /* Average daily BJU for the period — reuses the same .macro/.macro-track
      markup as the hero dashboard, so it inherits the same gradient fills. */
@@ -1075,8 +1106,8 @@
 <svg width="0" height="0" style="position:absolute">
   <defs>
     <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#10b981" />
-      <stop offset="100%" stop-color="#4ade80" />
+      <stop offset="0%" stop-color="#16a34a" />
+      <stop offset="100%" stop-color="#22c55e" />
     </linearGradient>
   </defs>
 </svg>
@@ -1151,7 +1182,7 @@
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <div class="titlewrap">
-        <div class="sheet-emoji" id="sheetEmoji">🍽️</div>
+        <div class="sheet-emoji" id="sheetEmoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/></svg></div>
         <div>
           <h2 id="sheetTitle">Product</h2>
           <div class="sub" id="sheetSub"></div>
@@ -1168,7 +1199,12 @@
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <div class="titlewrap">
-        <div class="sheet-emoji">📊</div>
+        <div class="sheet-emoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="20" x2="20" y2="20"/>
+          <rect x="6" y="13" width="3.2" height="7" rx="0.8"/>
+          <rect x="10.4" y="8" width="3.2" height="12" rx="0.8"/>
+          <rect x="14.8" y="4.5" width="3.2" height="15.5" rx="0.8"/>
+        </svg></div>
         <div>
           <h2>Статистика</h2>
           <div class="sub" id="analyticsSub">Огляд харчування</div>
@@ -1205,7 +1241,13 @@
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <div class="titlewrap">
-        <div class="sheet-emoji">⚖️</div>
+        <div class="sheet-emoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="9" width="3" height="6" rx="1"/>
+          <rect x="19" y="9" width="3" height="6" rx="1"/>
+          <rect x="6" y="7" width="2.5" height="10" rx="1"/>
+          <rect x="15.5" y="7" width="2.5" height="10" rx="1"/>
+          <line x1="8.5" y1="12" x2="15.5" y2="12"/>
+        </svg></div>
         <div>
           <h2>Вага</h2>
           <div class="sub">Щотижневий підсумок</div>
@@ -1242,7 +1284,9 @@
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <div class="titlewrap">
-        <div class="sheet-emoji">🎯</div>
+        <div class="sheet-emoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.6" fill="currentColor" stroke="none"/>
+        </svg></div>
         <div>
           <h2>Денна ціль</h2>
           <div class="sub">Усі ліміти масштабуються під це число</div>
@@ -1274,7 +1318,13 @@
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <div class="titlewrap">
-        <div class="sheet-emoji">🧊</div>
+        <div class="sheet-emoji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="2" width="14" height="20" rx="2"/>
+          <line x1="5" y1="9" x2="19" y2="9"/>
+          <line x1="8" y1="5" x2="8" y2="7"/>
+          <line x1="8" y1="12" x2="8" y2="15"/>
+          <path d="M18.3 2.6l0.55 1.35 1.35 0.55-1.35 0.55-0.55 1.35-0.55-1.35-1.35-0.55 1.35-0.55z" fill="currentColor" stroke="none"/>
+        </svg></div>
         <div>
           <h2>AI Холодильник</h2>
           <div class="sub">Рецепт з того, що є під рукою</div>
