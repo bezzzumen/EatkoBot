@@ -1167,10 +1167,11 @@ const CATEGORY_ICON_FALLBACK = `<svg viewBox="0 0 24 24" fill="none" stroke="cur
   <circle cx="12" cy="12" r="8.5"/>
 </svg>`;
 
-function categoryIconBadgeHtml(categoryKey) {
+function categoryIconBadgeHtml(categoryKey, size) {
   const svg = CATEGORY_ICON_SVG[categoryKey] || CATEGORY_ICON_FALLBACK;
   const cls = CATEGORY_ICON_SVG[categoryKey] ? `cat-badge-${categoryKey}` : 'cat-badge-fallback';
-  return `<div class="cat-icon-badge ${cls}">${svg}</div>`;
+  const sizeCls = size === 'sm' ? ' cat-icon-badge-sm' : '';
+  return `<div class="cat-icon-badge${sizeCls} ${cls}">${svg}</div>`;
 }
 
 function renderCategories() {
@@ -1587,7 +1588,7 @@ function renderAnalyticsCategories(loggedDays) {
     return `
       <div class="category-row">
         <div class="category-top">
-          <span class="category-name">${meta ? meta.emoji : '🍽️'} ${meta ? meta.name : key}</span>
+          <span class="category-name">${categoryIconBadgeHtml(key, 'sm')}${meta ? meta.name : key}</span>
           <span class="category-pct">${pct}%</span>
         </div>
         <div class="category-bar-track"><div class="category-bar-fill" style="width:${pct}%"></div></div>
@@ -1663,6 +1664,14 @@ function renderPeriodNav(dates) {
   prevBtn.disabled = prevPeriodStart < cutoff;
 }
 
+// Same trio of SVG macro icons used in the hero card (see the inline
+// .macro-icon markup in index.html) — kept as module-level constants so
+// the Statistics "day detail" breakdown below can reuse the exact same
+// artwork instead of the old 🍗/🥑/🌾 emoji glyphs.
+const MACRO_ICON_PROTEIN = `<svg class="macro-icon icon-protein" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 15c3.5-3.5 5.5-8 3-10.5-2.5-2.5-7 0-9.5 3.5C6 10.5 4 15 4 18a2 2 0 0 0 2 2c3 0 7.5-2 9-4.5"/><path d="M9 15l-4.5 4.5"/><circle cx="15.5" cy="8.5" r="1.5" fill="currentColor" stroke="none"/></svg>`;
+const MACRO_ICON_FAT = `<svg class="macro-icon icon-fat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c2 2.5 5 4 5 8.5A5 5 0 0 1 7 11.5C7 8.5 8.5 6.5 12 3Z"/><path d="M8.5 15.5a5 5 0 0 0 7 0"/></svg>`;
+const MACRO_ICON_CARBS = `<svg class="macro-icon icon-carbs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20"/><path d="M12 4c-1.5 0-2.5 1-4 1S5 4 5 4s0 2 1.5 3S9 8 9 8s-1 1-1 2.5S9 13 9 13s-1.5 0-2.5 1S5 17 5 17s2 0 3.5-1 2.5-1 2.5-1"/><path d="M12 4c1.5 0 2.5 1 4 1s3-1 3-1-0 2-1.5 3S15 8 15 8s1 1 1 2.5-1 2.5-1 2.5 1.5 0 2.5 1 2.5 3 2.5 3-2 0-3.5-1-2.5-1-2.5-1"/></svg>`;
+
 function renderAnalyticsDayDetail() {
   const detailEl = document.getElementById('analyticsDayDetail');
   if (!analyticsSelectedDate) {
@@ -1704,9 +1713,9 @@ function renderAnalyticsDayDetail() {
       <div class="day-detail-date">${escapeHtml(formatFriendlyDate(analyticsSelectedDate))}</div>
       <div class="day-detail-kcal ${isOver ? 'over' : ''}">${Math.round(info.calories)} / ${Math.round(target)} ккал (${pct}%)</div>
       <div class="macros-row">
-        ${macroRow('🍗 Білки', 'protein', info.protein, goals.protein)}
-        ${macroRow('🥑 Жири', 'fat', info.fat, goals.fat)}
-        ${macroRow('🌾 Вуглеводи', 'carbs', info.carbs, goals.carbs)}
+        ${macroRow(`${MACRO_ICON_PROTEIN}Білки`, 'protein', info.protein, goals.protein)}
+        ${macroRow(`${MACRO_ICON_FAT}Жири`, 'fat', info.fat, goals.fat)}
+        ${macroRow(`${MACRO_ICON_CARBS}Вуглеводи`, 'carbs', info.carbs, goals.carbs)}
       </div>
     </div>`;
 }
@@ -1780,6 +1789,31 @@ overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSheet(
 function openSheet() { overlay.classList.add('show'); }
 function closeSheet() { overlay.classList.remove('show'); clearActiveNavBtn(); }
 
+// Sets the small icon slot in the sheet header. `categoryKey` present ->
+// renders that category's own colored SVG badge (same artwork/palette as
+// the category cards, via categoryIconBadgeHtml); omitted -> renders a
+// plain neutral SVG icon (also replacing the old bare-emoji glyphs, for
+// icons that aren't tied to a specific catalog category). Always resets
+// the element's className first so a leftover cat-badge-<key> class from
+// a previous sheet never bleeds into the next one.
+function setSheetEmoji(svgOrCategoryKey, isCategory) {
+  if (isCategory) {
+    sheetEmoji.className = `sheet-emoji cat-badge-${svgOrCategoryKey}`;
+    sheetEmoji.innerHTML = CATEGORY_ICON_SVG[svgOrCategoryKey] || CATEGORY_ICON_FALLBACK;
+  } else {
+    sheetEmoji.className = 'sheet-emoji';
+    sheetEmoji.innerHTML = svgOrCategoryKey;
+  }
+}
+
+const SHEET_ICON_CALCULATOR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="2" width="16" height="20" rx="2"/>
+  <line x1="8" y1="6" x2="16" y2="6"/>
+  <line x1="8" y1="11" x2="8" y2="11"/><line x1="12" y1="11" x2="12" y2="11"/><line x1="16" y1="11" x2="16" y2="11"/>
+  <line x1="8" y1="15" x2="8" y2="15"/><line x1="12" y1="15" x2="12" y2="15"/><line x1="16" y1="15" x2="16" y2="15"/>
+  <line x1="8" y1="19" x2="8" y2="19"/><line x1="12" y1="19" x2="12" y2="19"/><line x1="16" y1="19" x2="16" y2="19"/>
+</svg>`;
+
 // Bottom-nav "active tab" glow (see .bottom-nav-btn.nav-active in
 // index.html). These are modals, not routed views, so "active" just means
 // "this button's own sheet/overlay is currently open" — set right before
@@ -1804,7 +1838,7 @@ function openLogSheet(productKey) {
   }
   if (!item) return;
 
-  sheetEmoji.textContent = cat.emoji;
+  setSheetEmoji(cat.category_key, true);
   sheetTitle.textContent = item.product_name;
   sheetSub.textContent = cat.category_name;
 
@@ -1967,7 +2001,7 @@ function openLogSheet(productKey) {
 function openCalculatorSheet() {
   const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
 
-  sheetEmoji.textContent = '🧮';
+  setSheetEmoji(SHEET_ICON_CALCULATOR);
   sheetTitle.textContent = 'Калькулятор';
   sheetSub.textContent = 'КБЖУ на 100г × вага порції';
 
@@ -2166,7 +2200,7 @@ document.getElementById('calcBtn')?.addEventListener('click', () => {
 function openFreebieCustomSheet() {
   const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
 
-  sheetEmoji.textContent = '🍫';
+  setSheetEmoji(FREEBIE_CATEGORY_KEY, true);
   sheetTitle.textContent = 'Будь-чого — власний продукт';
   sheetSub.textContent = 'КБЖУ на 100г × вага порції';
 
