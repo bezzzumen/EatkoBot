@@ -10,12 +10,22 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --tg-bg: var(--tg-theme-bg-color, #F8FAFC);
-    --tg-text: var(--tg-theme-text-color, #0F172A);
-    --tg-hint: var(--tg-theme-hint-color, #64748B);
-    --tg-button: var(--tg-theme-button-color, #22c55e);
-    --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
-    --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+    /* Root cause of the contrast bugs found in testing: these used to read
+       through var(--tg-theme-*-color, fallback), so a user on a dark
+       Telegram client theme had Telegram's own (dark) values silently
+       override our fallback — e.g. a dark --tg-theme-secondary-bg-color
+       landing on .sheet while text stayed dark too, or a light
+       --tg-theme-text-color landing on our now-white cards. The Light
+       Avocado design is a deliberate brand, not a Telegram-theme-adaptive
+       one, so these are hardcoded and no longer take Telegram's params at
+       all — the app always renders the same regardless of client theme.
+       color-scheme below reinforces this for native form-control chrome. */
+    --tg-bg: #F8FAFC;
+    --tg-text: #0F172A;
+    --tg-hint: #64748B;
+    --tg-button: #22c55e;
+    --tg-button-text: #ffffff;
+    --tg-secondary-bg: #ffffff;
 
     --glass-bg: rgba(15, 23, 42, 0.03);
     --glass-bg-strong: rgba(15, 23, 42, 0.05);
@@ -57,10 +67,22 @@
     --hero-gradient: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
   }
 
+  /* Telling the platform this page is light-themed stops mobile
+     OS/WebView "smart" dark-mode re-coloring of native form controls
+     (inputs, selects) — a second, browser-level layer of the same
+     contrast fix as the hardcoded --tg-* values above. */
+  :root { color-scheme: light; }
+
   /* Telegram may still report a 'light' colorScheme explicitly — keep this
      branch in lockstep with :root so the app always renders the same
      Light Avocado design regardless of which branch matches. */
   [data-theme="light"] {
+    --tg-bg: #F8FAFC;
+    --tg-text: #0F172A;
+    --tg-hint: #64748B;
+    --tg-button: #22c55e;
+    --tg-button-text: #ffffff;
+    --tg-secondary-bg: #ffffff;
     --glass-bg: rgba(15, 23, 42, 0.03);
     --glass-bg-strong: rgba(15, 23, 42, 0.05);
     --glass-border: #E2E8F0;
@@ -73,8 +95,41 @@
     --hero-gradient: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
   }
 
+  /* ===== HIGH-CONTRAST INPUT FIX =====
+     Every text-entry field in the app: the PIN/invite-code field
+     (.lock-input) plus every type="number" field across the sheets
+     (weight, target, calculator, custom-item, AI Fridge). Hardcoded and
+     !important so nothing — not a stray inherited rule, not a mobile
+     WebView's own autofill/dark-mode styling of native form controls —
+     can silently darken the background or lighten the text again. */
+  input[type="password"],
+  input[type="number"],
+  input[type="text"].lock-input,
+  .pin-input {
+    color: #0F172A !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid #CBD5E1 !important;
+    /* iOS Safari/WebView can ignore `color` on number/autofilled fields
+       unless this is set too. */
+    -webkit-text-fill-color: #0F172A !important;
+  }
+  input[type="password"]:focus,
+  input[type="number"]:focus,
+  input[type="text"].lock-input:focus,
+  .pin-input:focus {
+    border-color: var(--aurora-1) !important;
+  }
+  input[type="password"]::placeholder,
+  input[type="number"]::placeholder,
+  input[type="text"].lock-input::placeholder,
+  .pin-input::placeholder {
+    color: #64748B !important;
+    opacity: 1;
+  }
+
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
+
 
   /* Global font enforcement — Plus Jakarta Sans everywhere, including
      buttons, cards, and headings, overriding any inherited UA/system font. */
@@ -568,6 +623,48 @@
   .sheet-header .sheet-emoji:not([class*="cat-badge-"]) svg { stroke: var(--tg-text); }
   .sheet-header h2 { margin: 0; font-size: 16.5px; font-weight: 700; }
   .sheet-header .sub { color: var(--tg-hint); font-size: 12px; margin-top: 2px; font-weight: 500; }
+
+  /* ===== HIGH-CONTRAST TEXT FIX — inside every bottom sheet =====
+     Hardcoded on top of the (now also-fixed) --tg-text/--tg-hint tokens,
+     scoped to .sheet/.modal/.popup specifically (every sheet in this app
+     lives inside .overlay > .sheet, so .sheet already covers all of
+     them), so nothing in a modal can ever again inherit a stray
+     dark-themed or Telegram-theme color instead of this app's own light
+     design. */
+  .sheet h2, .modal h2, .popup h2,
+  .sheet .sheet-header h2, .modal .sheet-header h2, .popup .sheet-header h2 {
+    color: #0F172A !important;
+  }
+  .sheet .sheet-header .sub, .modal .sheet-header .sub, .popup .sheet-header .sub,
+  .sheet .section-title, .modal .section-title, .popup .section-title,
+  .sheet .recipe-section-label, .modal .recipe-section-label, .popup .recipe-section-label {
+    color: #334155 !important;
+    font-weight: 700;
+  }
+  .sheet .category-row .category-name,
+  .modal .category-row .category-name,
+  .popup .category-row .category-name {
+    color: #0F172A !important;
+    font-weight: 600;
+  }
+  .sheet .macro-val, .modal .macro-val, .popup .macro-val,
+  .sheet .day-detail-kcal, .modal .day-detail-kcal, .popup .day-detail-kcal {
+    color: #1E293B !important;
+  }
+  /* .day-detail-kcal.over needs to stay red (semantic "over budget" state)
+     — same specificity as the rule above, so it needs its own !important
+     to win back the color rather than being swallowed by it. */
+  .sheet .day-detail-kcal.over, .modal .day-detail-kcal.over, .popup .day-detail-kcal.over {
+    color: var(--danger) !important;
+  }
+  .sheet .recipe-title, .modal .recipe-title, .popup .recipe-title,
+  .sheet .recipe-description, .modal .recipe-description, .popup .recipe-description,
+  .sheet .recipe-ingredients li, .modal .recipe-ingredients li, .popup .recipe-ingredients li,
+  .sheet .recipe-steps li, .modal .recipe-steps li, .popup .recipe-steps li {
+    color: #0F172A !important;
+    line-height: 1.5;
+  }
+
   .sheet-close {
     background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
     width: 30px; height: 30px; border-radius: 50%; color: var(--tg-hint); font-size: 14px; cursor: pointer; flex-shrink: 0;
