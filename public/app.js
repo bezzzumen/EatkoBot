@@ -1082,8 +1082,11 @@ function renderStreak() {
   const el = document.getElementById('streakInline');
   if (!el) return;
 
+  // The flame is a static SVG in the pill badge markup now (not emoji
+  // text) — only the number needs updating on each render.
   el.classList.toggle('zero', streak === 0);
-  el.textContent = `🔥 ${streak}`;
+  const numEl = document.getElementById('streakNum');
+  if (numEl) numEl.textContent = streak;
 }
 
 const WEEK_STATUS_EMOJI = { success: '🔥', over: '❌', unlogged: '⚪', future: '⚪' };
