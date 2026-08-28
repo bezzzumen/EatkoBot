@@ -599,6 +599,19 @@ function buildSummaryMessage({ total_calories, daily_calorie_target, streak, cat
 const app = express();
 app.use(express.json());
 
+// --- Keep-alive ping endpoints (registered first, before any other route
+// including static file serving) ---
+//
+// External cron pingers (e.g. cron-job.org) hit the root URL `/` to keep
+// Render's free-tier instance from sleeping. `/` is served by
+// express.static below and returns the full index.html bundle, which some
+// cron providers reject with "Failed (output too large)" once it exceeds
+// their response size limit — and a rejected ping doesn't count as
+// activity, so the instance goes to sleep anyway. These two routes give
+// pingers a trivially small, fast response instead.
+app.get('/ping', (req, res) => res.status(200).send('OK'));
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
 // --- API routes (registered before static file serving) ---
 
 // Static, read-only reference data: the categories, their items, and the
