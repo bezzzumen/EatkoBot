@@ -157,6 +157,77 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Flattens an error into one searchable string: its own message plus every
+// message down the `cause` chain, plus a JSON dump as a last resort.
+//
+// This exists because @tursodatabase/serverless does NOT always put the
+// SQLite error text in err.message — for a failed statement it typically
+// throws a generic wrapper whose err.cause carries the real
+// "SQLite error: duplicate column name: daily_target". Matching on
+// err.message alone therefore misses it, which is exactly what kept
+// crashing ensureSchema on boot in production (and took the whole service
+// down with 503s).
+//
+// The cause chain is walked with a depth cap and a seen-set because a cause
+// can legitimately point back at an ancestor, and JSON.stringify is guarded
+// because errors frequently hold circular references (request/response
+// objects) and a throw in here would defeat the entire purpose.
+function collectErrorText(err, maxDepth = 5) {
+  const parts = [];
+  const seen = new Set();
+
+  let current = err;
+  for (let depth = 0; current && depth < maxDepth; depth++) {
+    if (typeof current === 'object') {
+      if (seen.has(current)) break;
+      seen.add(current);
+    }
+
+    if (typeof current === 'string') {
+      parts.push(current);
+      break;
+    }
+
+    if (current.message) parts.push(String(current.message));
+    if (current.code) parts.push(String(current.code));
+    // Some drivers stash the SQLite text on non-standard fields.
+    if (current.rawCode) parts.push(String(current.rawCode));
+    if (current.error) parts.push(String(current.error));
+
+    current = current.cause;
+  }
+
+  try {
+    parts.push(JSON.stringify(err));
+  } catch {
+    // Circular / non-serializable — the messages above are enough.
+  }
+
+  try {
+    parts.push(String(err));
+  } catch {
+    // Exotic error object with a throwing toString; ignore.
+  }
+
+  return parts.filter(Boolean).join(' ');
+}
+
+// True when the flattened error text names a real SQL/application problem.
+// These are deterministic: the exact same statement will fail the exact
+// same way on retry, so there is nothing to gain by waiting 1.5s and
+// trying again (see isRetryableTursoError below).
+function isDeterministicSqlError(text) {
+  return (
+    /duplicate column/i.test(text) ||
+    /already exists/i.test(text) ||
+    /no such (table|column)/i.test(text) ||
+    /syntax error/i.test(text) ||
+    /constraint failed/i.test(text) ||
+    /SQLITE_/i.test(text) ||
+    /SQLite error/i.test(text)
+  );
+}
+
 // Whether an error is worth retrying: a 404 HTTP-transport failure (the
 // Turso DB was auto-paused and the request landed before it finished
 // cold-starting back up) or a network-level failure (err.cause set, for a
@@ -166,10 +237,18 @@ function sleep(ms) {
 // waiting 1.5s twice just to get the same real error a third time.
 function isRetryableTursoError(err) {
   if (!err) return false;
+
+  const text = collectErrorText(err);
+
+  // Checked BEFORE the err.cause branch below: this driver also wraps real
+  // SQL errors in a cause, so the old "err.cause ⇒ retryable" rule made
+  // every duplicate-column failure sit through 2 pointless retries (3s of
+  // sleeps) on every single boot before finally throwing.
+  if (isDeterministicSqlError(text)) return false;
+
   if (err.status === 404) return true;
   if (err.cause) return true; // network-level failure below the HTTP layer
-  const message = String(err.message || '');
-  return /HTTP error! status: 404/i.test(message) || /fetch failed/i.test(message);
+  return /HTTP error! status: 404/i.test(text) || /fetch failed/i.test(text);
 }
 
 // Thin wrapper around every turso.execute() call in this file. On top of
@@ -234,27 +313,12 @@ async function ensureSchema() {
   // expected, and safely ignored below rather than left to crash
   // ensureSchema (and therefore boot).
   //
-  // Two message patterns are checked because different Turso/libsql driver
-  // versions have phrased this differently ("duplicate column name: X" vs
-  // "column X already exists" / "X already exists") — matching only one
-  // pattern is exactly what let this slip through and fail a real
-  // deployment, so both are covered here. Any OTHER error still throws,
+  // See ensureUsersDailyTargetColumn() below for how the "column already
+  // exists" case is detected and ignored. Any OTHER error still throws,
   // since that would mean something genuinely unexpected went wrong (e.g.
   // a real connectivity or permissions problem) and ensureSchema should
   // not silently continue past that.
-  try {
-    await runTursoQuery(
-      'ensureSchema: users.daily_target migration',
-      `ALTER TABLE users ADD COLUMN daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`
-    );
-  } catch (err) {
-    const message = String(err?.message || '');
-    if (/duplicate column name/i.test(message) || /already exists/i.test(message)) {
-      console.log('[ensureSchema] Column daily_target already exists, skipping migration');
-    } else {
-      throw err;
-    }
-  }
+  await ensureUsersDailyTargetColumn();
 
   // One row per (user, date) — a snapshot of that day's totals, upserted
   // every time the client syncs. Only the latest snapshot per day is kept.
@@ -327,6 +391,60 @@ async function ensureSchema() {
       UNIQUE(user_id, week_start)
     )
   `);
+}
+
+// Adds users.daily_target on deployments whose `users` table predates the
+// column. Two layers, because this is on the boot path and a false throw
+// here means the whole service 503s:
+//
+//   1. PRAGMA table_info(users) — if the column is already there, the
+//      ALTER is never attempted, so the common case (every redeploy of an
+//      already-migrated install) produces no error at all. If the PRAGMA
+//      itself fails for any reason, we fall through to the ALTER rather
+//      than treating that as fatal.
+//   2. The ALTER's catch inspects the FULL error (message + the whole
+//      `cause` chain, via collectErrorText) rather than err.message alone.
+//      @tursodatabase/serverless surfaces the actual
+//      "SQLite error: duplicate column name: daily_target" on err.cause,
+//      so the old err.message-only check never matched and rethrew — which
+//      is what crashed startup in production.
+async function ensureUsersDailyTargetColumn() {
+  try {
+    const info = await runTursoQuery(
+      'ensureSchema: users.daily_target pragma check',
+      'PRAGMA table_info(users)'
+    );
+    const hasColumn = (info?.rows || []).some((row) => {
+      // PRAGMA rows come back keyed by name on this driver, but fall back
+      // to positional access (index 1 is `name`) just in case.
+      const name = row?.name ?? row?.[1];
+      return String(name).toLowerCase() === 'daily_target';
+    });
+    if (hasColumn) {
+      console.log('[ensureSchema] Column users.daily_target already present, skipping migration');
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      `[ensureSchema] PRAGMA table_info(users) check failed, falling back to ALTER: ${err?.message}`
+    );
+  }
+
+  try {
+    await runTursoQuery(
+      'ensureSchema: users.daily_target migration',
+      `ALTER TABLE users ADD COLUMN daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`
+    );
+    console.log('[ensureSchema] Added users.daily_target column');
+  } catch (err) {
+    const fullError = collectErrorText(err);
+
+    if (/duplicate column/i.test(fullError) || /already exists/i.test(fullError)) {
+      console.log('[ensureSchema] Column users.daily_target already exists, skipping migration');
+    } else {
+      throw err;
+    }
+  }
 }
 
 async function getOrCreateUser({ telegram_id, first_name, username }) {
