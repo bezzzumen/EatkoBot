@@ -648,17 +648,27 @@ app.get('/api/check-auth', async (req, res) => {
       return res.json({ authorized: false });
     }
 
-    // Authorized — also hand back this user's daily_target here, since
-    // this endpoint is what the client already calls on every app open.
-    // Falls back to the app-wide default (2220) inside getUserDailyTarget
-    // for anyone who hasn't set a custom one via POST /api/user/settings.
+    // Authorized — also hand back this user's targets here, since this
+    // endpoint is what the client already calls on every app open. Falls
+    // back to the app-wide default (2220) inside getUserTargets for anyone
+    // who hasn't set a custom one via POST /api/user/settings.
+    //
+    // target_protein/fat/carbs are returned as-is, nulls included: a null
+    // tells the client "derive this macro by scaling the base catalog",
+    // which is a different instruction from any concrete number.
     const userId = await db.getOrCreateUser({
       telegram_id: tgUser.id,
       first_name: tgUser.first_name,
       username: tgUser.username,
     });
-    const daily_target = await db.getUserDailyTarget(userId);
-    res.json({ authorized: true, daily_target });
+    const targets = await db.getUserTargets(userId);
+    res.json({
+      authorized: true,
+      daily_target: targets.daily_target,
+      target_protein: targets.target_protein,
+      target_fat: targets.target_fat,
+      target_carbs: targets.target_carbs,
+    });
   } catch (err) {
     console.error('[check-auth] failed:', err.message);
     res.status(502).json({ error: 'Failed to check authorization' });
@@ -906,10 +916,58 @@ app.post('/api/weight', async (req, res) => {
 const MIN_DAILY_TARGET = 800;
 const MAX_DAILY_TARGET = 6000;
 
-// Updates this user's daily_target (the base default, DAILY_CALORIE_TARGET,
-// is 2220 — see database.js). Same auth + allowlist check as the weight
-// endpoints above. Whatever is saved here is what GET /api/check-auth
-// returns to the client on the next app open.
+// Per-macro gram ceilings. Generous on purpose — the real constraint is
+// the derived calorie total below (4/9/4), which these can't individually
+// breach. They exist to reject obvious garbage (a fat-finger 9999) before
+// it reaches the database, not to police anyone's diet.
+const MACRO_LIMITS = {
+  target_protein: { min: 0, max: 600 },
+  target_fat: { min: 0, max: 400 },
+  target_carbs: { min: 0, max: 1200 },
+};
+
+// How far the macros' own 4/9/4 total may sit from the submitted
+// daily_target before we treat the pair as incoherent.
+//
+// Zero tolerance would be wrong: when the user edits the CALORIE field the
+// client scales the three macros by the ratio and rounds each to a whole
+// gram, so the derived total lands up to ~9 kcal off the number the user
+// actually typed (0.5g of fat alone is 4.5). Showing them 2497 after they
+// typed 2500 would be worse than carrying the drift, so the drift is
+// allowed — but only at a size rounding can explain. Anything larger means
+// a genuine client bug, and silently storing a calorie total that the hero
+// card's own macro rows contradict is exactly the kind of thing that's
+// miserable to debug later.
+const MACRO_KCAL_TOLERANCE = 25;
+
+// Parses one optional macro field. Returns { ok: true, value } where value
+// is an integer or null (null = "clear it, go back to deriving this macro
+// from the scaled catalog"), or { ok: false, error }.
+//
+// Missing and explicitly-null are deliberately treated the SAME, as
+// "clear": this endpoint always receives the client's complete intended
+// state, never a patch, so an absent macro genuinely means absent.
+function parseMacroField(body, field) {
+  const raw = body?.[field];
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: null };
+
+  const value = Number(raw);
+  const { min, max } = MACRO_LIMITS[field];
+  if (!Number.isInteger(value) || value < min || value > max) {
+    return { ok: false, error: `${field} must be a whole number of grams between ${min} and ${max}` };
+  }
+  return { ok: true, value };
+}
+
+// Updates this user's calorie target and optional custom macro targets (the
+// base default, DAILY_CALORIE_TARGET, is 2220 — see database.js). Same auth
+// + allowlist check as the weight endpoints above. Whatever is saved here is
+// what GET /api/check-auth returns to the client on the next app open.
+//
+// Macros are all-or-nothing: either all three grams arrive, or none do.
+// A partial set has no coherent meaning — the calorie total is a function
+// of all three, so storing (protein, carbs) with fat left to be derived
+// from a scaling ratio would produce a total that agrees with neither.
 app.post('/api/user/settings', async (req, res) => {
   const tgUser = await authenticateAllowedUser(req, res);
   if (!tgUser) return;
@@ -921,14 +979,52 @@ app.post('/api/user/settings', async (req, res) => {
     });
   }
 
+  const protein = parseMacroField(req.body, 'target_protein');
+  const fat = parseMacroField(req.body, 'target_fat');
+  const carbs = parseMacroField(req.body, 'target_carbs');
+  for (const parsed of [protein, fat, carbs]) {
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  }
+
+  const provided = [protein.value, fat.value, carbs.value].filter((v) => v !== null).length;
+  if (provided !== 0 && provided !== 3) {
+    return res.status(400).json({
+      error: 'target_protein, target_fat and target_carbs must be sent together, or not at all',
+    });
+  }
+
+  if (provided === 3) {
+    const derivedKcal = protein.value * 4 + fat.value * 9 + carbs.value * 4;
+    if (derivedKcal < MIN_DAILY_TARGET || derivedKcal > MAX_DAILY_TARGET) {
+      return res.status(400).json({
+        error: `Макроси дають ${derivedKcal} ккал — поза межами ${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET}.`,
+      });
+    }
+    if (Math.abs(derivedKcal - dailyTarget) > MACRO_KCAL_TOLERANCE) {
+      return res.status(400).json({
+        error: `daily_target (${dailyTarget}) does not match the macros' 4/9/4 total (${derivedKcal})`,
+      });
+    }
+  }
+
   try {
     const userId = await db.getOrCreateUser({
       telegram_id: tgUser.id,
       first_name: tgUser.first_name,
       username: tgUser.username,
     });
-    await db.updateUserDailyTarget(userId, dailyTarget);
-    res.json({ daily_target: dailyTarget });
+    await db.updateUserTargets(userId, {
+      dailyTarget,
+      targetProtein: protein.value,
+      targetFat: fat.value,
+      targetCarbs: carbs.value,
+    });
+    res.json({
+      daily_target: dailyTarget,
+      target_protein: protein.value,
+      target_fat: fat.value,
+      target_carbs: carbs.value,
+    });
   } catch (err) {
     console.error('[user-settings] failed:', err.message);
     res.status(502).json({ error: 'Не вдалося зберегти денну ціль. Спробуйте ще раз.' });
