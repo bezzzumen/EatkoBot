@@ -473,9 +473,50 @@ const DEFAULT_DAILY_TARGET = 2220; // matches DAILY_CALORIE_TARGET in database.j
 const MIN_DAILY_TARGET = 800;
 const MAX_DAILY_TARGET = 6000;
 const DAILY_TARGET_CACHE_KEY = 'eatko_daily_target_v1';
+const MACRO_TARGETS_CACHE_KEY = 'eatko_macro_targets_v1';
+
+// Atwater factors. The one place these live — every kcal-from-grams
+// computation in the target editor goes through macrosToKcal() below.
+const KCAL_PER_G = { protein: 4, fat: 9, carbs: 4 };
+
+// Per-macro gram bounds, mirroring MACRO_LIMITS in server.js. Kept in sync
+// by hand (there's no shared module between client and server here), so if
+// you widen one, widen the other — a client that allows more than the
+// server does just produces a confusing 400 on save.
+const MACRO_BOUNDS = {
+  protein: { min: 0, max: 600 },
+  fat: { min: 0, max: 400 },
+  carbs: { min: 0, max: 1200 },
+};
 
 let BASE_CATALOG = null;
 let userDailyTarget = DEFAULT_DAILY_TARGET;
+
+// The user's explicit macro grams, or null for "never customized — derive
+// them by scaling the base catalog", which is the behavior this app had
+// before macro targets existed and remains the default for everyone who
+// doesn't touch the new inputs.
+let userMacroTargets = null;
+
+function macrosToKcal(m) {
+  if (!m) return 0;
+  return m.protein * KCAL_PER_G.protein + m.fat * KCAL_PER_G.fat + m.carbs * KCAL_PER_G.carbs;
+}
+
+// Accepts {protein, fat, carbs} from anywhere untrusted (localStorage, the
+// server, a half-typed form) and returns a clean whole-gram triple, or null
+// if any part of it isn't usable. All-or-nothing on purpose: a partial set
+// has no coherent calorie total, so there's nothing sensible to do with it.
+function normalizeMacroTargets(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const key of ['protein', 'fat', 'carbs']) {
+    const n = Math.round(Number(raw[key]));
+    if (!Number.isFinite(n) || n < MACRO_BOUNDS[key].min || n > MACRO_BOUNDS[key].max) return null;
+    out[key] = n;
+  }
+  return out;
+}
 
 function loadCachedDailyTarget() {
   try {
@@ -488,6 +529,67 @@ function loadCachedDailyTarget() {
 }
 function saveCachedDailyTarget(target) {
   try { localStorage.setItem(DAILY_TARGET_CACHE_KEY, String(target)); } catch { /* non-fatal */ }
+}
+
+function loadCachedMacroTargets() {
+  try {
+    const raw = localStorage.getItem(MACRO_TARGETS_CACHE_KEY);
+    return raw ? normalizeMacroTargets(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+function saveCachedMacroTargets(macros) {
+  try {
+    if (macros) localStorage.setItem(MACRO_TARGETS_CACHE_KEY, JSON.stringify(macros));
+    else localStorage.removeItem(MACRO_TARGETS_CACHE_KEY);
+  } catch { /* non-fatal */ }
+}
+
+// The macro goals currently in force: the user's own grams if they've set
+// any, otherwise the base goals scaled to their calorie target — i.e.
+// exactly what the hero card is showing right now, either way. This is what
+// the editor prefills from, so opening the sheet always starts from what
+// the user can already see rather than from an abstract default.
+function effectiveMacroGoals() {
+  if (userMacroTargets) return { ...userMacroTargets };
+  if (!BASE_CATALOG) return { protein: 0, fat: 0, carbs: 0 };
+  const k = userDailyTarget / BASE_CATALOG.daily_calorie_target;
+  return {
+    protein: Math.round(BASE_CATALOG.protein_goal * k),
+    fat: Math.round(BASE_CATALOG.fat_goal * k),
+    carbs: Math.round(BASE_CATALOG.carbs_goal * k),
+  };
+}
+
+// Rescales a macro triple so its 4/9/4 total lands on `target`, keeping
+// the existing split between the three.
+//
+// The trailing residual step matters more than it looks: rounding three
+// grams independently can leave the total a dozen kcal off, and since the
+// editor treats the macros as the source of truth for the calorie target
+// (see submit() below), that drift would otherwise surface as the user
+// typing 2500 and the hero card reading 2489. Carbs absorb the remainder
+// because they're the largest and least precision-sensitive of the three.
+//
+// Whole grams can't always land it dead-on — a residual that isn't a
+// multiple of 4 leaves up to ±2 kcal, which no integer gram count can
+// close. That's inside the server's rounding tolerance and invisible on a
+// four-digit number, so it's carried rather than chased.
+function scaleMacrosToKcal(macros, target) {
+  const current = macrosToKcal(macros);
+  if (!current || !Number.isFinite(target) || target <= 0) return { ...macros };
+
+  const ratio = target / current;
+  const scaled = {
+    protein: Math.max(0, Math.round(macros.protein * ratio)),
+    fat: Math.max(0, Math.round(macros.fat * ratio)),
+    carbs: Math.max(0, Math.round(macros.carbs * ratio)),
+  };
+
+  const residual = target - macrosToKcal(scaled);
+  scaled.carbs = Math.max(0, scaled.carbs + Math.round(residual / KCAL_PER_G.carbs));
+  return scaled;
 }
 
 // Scales every calorie-denominated limit in the base catalog by
@@ -519,15 +621,26 @@ function saveCachedDailyTarget(target) {
 // supposed to be, regardless of K. (The K's cancel out algebraically in
 // every ratio-based computation once max_grams and target_calories scale
 // together — see computeDayMacros/computeDayCategoryCalories below.)
-function scaleCatalog(base, target) {
+//
+// MACRO OVERRIDE: when the user has set explicit grams, those three
+// numbers replace the scaled *_goal values and nothing else changes. The
+// per-category and per-item scaling below still runs off the same single
+// K, so the category budgets keep tracking the calorie target exactly as
+// they always have — an override only decides how the day's calories are
+// *labelled* across P/F/C on the hero card, not how the food catalog is
+// portioned. (Portioning each category by macro would mean re-deriving
+// every item's max_grams from its own macro composition, which is a
+// different and much larger feature than this one.)
+function scaleCatalog(base, target, macroOverride) {
   if (!base) return base;
   const k = target / base.daily_calorie_target;
+  const macros = macroOverride || null;
   return {
     ...base,
     daily_calorie_target: target,
-    protein_goal: Math.round(base.protein_goal * k),
-    carbs_goal: Math.round(base.carbs_goal * k),
-    fat_goal: Math.round(base.fat_goal * k),
+    protein_goal: macros ? macros.protein : Math.round(base.protein_goal * k),
+    carbs_goal: macros ? macros.carbs : Math.round(base.carbs_goal * k),
+    fat_goal: macros ? macros.fat : Math.round(base.fat_goal * k),
     categories: base.categories.map((cat) => ({
       ...cat,
       target_calories: Math.round(cat.target_calories * k),
@@ -547,16 +660,41 @@ function scaleCatalog(base, target) {
 // already loaded, rescales CATALOG and re-renders. Safe to call before
 // BASE_CATALOG/STATE exist yet (e.g. from boot(), before init() has run) —
 // it just caches the value for init() to pick up as its starting point.
-function applyDailyTarget(target) {
+function applyTargets(target, macros) {
   const rounded = Math.round(target);
   if (!Number.isFinite(rounded) || rounded <= 0) return;
-  if (rounded === userDailyTarget && CATALOG) return; // no-op, avoid a pointless re-render
+
+  const nextMacros = macros === undefined ? userMacroTargets : normalizeMacroTargets(macros);
+
+  // Cheap deep-equality on a three-number object, to keep a background
+  // check-auth that returns the values we already have from triggering a
+  // pointless full re-render of every category.
+  const sameMacros =
+    (nextMacros === null && userMacroTargets === null) ||
+    (nextMacros && userMacroTargets &&
+      nextMacros.protein === userMacroTargets.protein &&
+      nextMacros.fat === userMacroTargets.fat &&
+      nextMacros.carbs === userMacroTargets.carbs);
+
+  if (rounded === userDailyTarget && sameMacros && CATALOG) return;
+
   userDailyTarget = rounded;
+  userMacroTargets = nextMacros;
   saveCachedDailyTarget(rounded);
+  saveCachedMacroTargets(nextMacros);
+
   if (BASE_CATALOG) {
-    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget, userMacroTargets);
     if (STATE) recomputeAndRender();
   }
+}
+
+// Back-compat shim for the calorie-only call sites that predate macro
+// targets. Passing macros as undefined (rather than null) is what keeps
+// any macros already set from being silently cleared by a plain
+// calorie-target update.
+function applyDailyTarget(target) {
+  applyTargets(target, undefined);
 }
 
 function showToast(msg) {
@@ -599,12 +737,13 @@ async function init() {
   // the background and calls applyDailyTarget() again if it turns out to
   // differ from this cached one (e.g. it was changed on another device).
   userDailyTarget = loadCachedDailyTarget() || DEFAULT_DAILY_TARGET;
+  userMacroTargets = loadCachedMacroTargets();
 
   // --- 1. IMMEDIATE RENDER: from local cache, before any network request ---
   const cachedCatalog = loadCachedCatalog();
   if (cachedCatalog) {
     BASE_CATALOG = cachedCatalog;
-    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget, userMacroTargets);
     try {
       await preloadHistory(); // CloudStorage/localStorage only — not a network call to OUR server
       await loadDayLog(TODAY);
@@ -623,7 +762,7 @@ async function init() {
     const fresh = await fetchCatalog();
     BASE_CATALOG = fresh;
     saveCachedCatalog(fresh);
-    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget);
+    CATALOG = scaleCatalog(BASE_CATALOG, userDailyTarget, userMacroTargets);
 
     if (!cachedCatalog) {
       // First-ever load on this device — there was nothing to show until now.
@@ -760,12 +899,20 @@ async function syncDailyStatus() {
 // background sync of frequently-changing state — so a failed attempt just
 // throws for the caller to handle; the local value (already applied
 // optimistically by applyDailyTarget) stays correct either way.
-async function saveDailyTargetToServer(target) {
+async function saveTargetsToServer(target, macros) {
   if (!INIT_DATA) return; // outside Telegram — nothing to sync, local value already applied
   const res = await fetch('/api/user/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
-    body: JSON.stringify({ daily_target: target }),
+    body: JSON.stringify({
+      daily_target: target,
+      // Nulls are sent explicitly rather than omitted so that clearing
+      // custom macros is a real, transmittable action — the endpoint reads
+      // this body as the complete intended state, not as a patch.
+      target_protein: macros ? macros.protein : null,
+      target_fat: macros ? macros.fat : null,
+      target_carbs: macros ? macros.carbs : null,
+    }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -936,87 +1083,216 @@ wireUpWeightForm();
 // Custom daily calorie target — UI
 // ---------------------------------------------------------------------------
 
+// The sheet's four inputs are two views of ONE number, kept coupled while
+// the user types:
+//
+//   • edit a macro  → the calorie field becomes 4P + 9F + 4C
+//   • edit calories → the three macros rescale to hit that total exactly,
+//                     keeping the split they already had
+//
+// so whatever is on screen always satisfies the 4/9/4 identity. The macros
+// are the source of truth on save (see submit below): the calorie field is
+// a convenience scaler for people who think in kcal first, not a fifth
+// independent value that could disagree with the other three.
+const MACRO_FIELDS = [
+  { key: 'protein', inputId: 'macroProteinInput' },
+  { key: 'fat', inputId: 'macroFatInput' },
+  { key: 'carbs', inputId: 'macroCarbsInput' },
+];
+
+function targetSheetEls() {
+  const els = {
+    kcal: document.getElementById('targetInput'),
+    preview: document.getElementById('targetPreview'),
+    split: document.getElementById('targetSplit'),
+    error: document.getElementById('targetError'),
+    save: document.getElementById('targetSaveBtn'),
+    note: document.getElementById('targetNormalizeNote'),
+  };
+  for (const f of MACRO_FIELDS) els[f.key] = document.getElementById(f.inputId);
+  return els;
+}
+
+// Whatever is in the three macro inputs right now, as whole grams. Blank
+// and malformed fields read as 0 rather than aborting, so the live preview
+// keeps updating mid-edit (a half-deleted "1|" shouldn't blank the whole
+// panel); the real range check happens once, on submit.
+function readMacroInputs(els) {
+  const out = {};
+  for (const f of MACRO_FIELDS) {
+    const n = parseInt(els[f.key]?.value, 10);
+    out[f.key] = Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  return out;
+}
+
+function writeMacroInputs(els, macros) {
+  for (const f of MACRO_FIELDS) {
+    if (els[f.key]) els[f.key].value = macros[f.key];
+  }
+}
+
 function openTargetSheet() {
-  const input = document.getElementById('targetInput');
-  const errorEl = document.getElementById('targetError');
-  const saveBtn = document.getElementById('targetSaveBtn');
-  if (!input || !errorEl || !saveBtn) return;
+  const els = targetSheetEls();
+  if (!els.kcal || !els.error || !els.save) return;
 
-  errorEl.textContent = '';
-  saveBtn.disabled = false;
-  input.value = userDailyTarget;
+  els.error.textContent = '';
+  els.save.disabled = false;
+
+  // Prefill from what the hero card is showing right now — the user's own
+  // grams if they've set any, otherwise the scaled base goals.
+  const current = effectiveMacroGoals();
+  const currentKcal = macrosToKcal(current);
+
+  // The base catalog's macro goals don't add up to its calorie target
+  // under 4/9/4 (135/62/215 comes to 1958, not 2220 — the two were set
+  // independently in database.js). That's harmless while macros are merely
+  // derived for display, but this sheet makes them authoritative, so the
+  // two have to be reconciled before the user can edit them or the first
+  // keystroke would yank the calorie target down by ~12%.
+  //
+  // Reconciling on OPEN rather than on first edit is the deliberate part:
+  // the adjustment is then visible in the fields from the outset, with the
+  // note below explaining it, instead of firing as a surprise jump halfway
+  // through typing.
+  const needsNormalizing = !userMacroTargets && Math.abs(currentKcal - userDailyTarget) > 2;
+  const prefill = needsNormalizing ? scaleMacrosToKcal(current, userDailyTarget) : current;
+
+  writeMacroInputs(els, prefill);
+  els.kcal.value = macrosToKcal(prefill);
+
+  if (els.note) {
+    els.note.style.display = needsNormalizing ? 'block' : 'none';
+    if (needsNormalizing) {
+      els.note.textContent =
+        `Макроси підігнані під ${userDailyTarget} ккал за формулою 4/9/4 — базові значення давали ${currentKcal} ккал.`;
+    }
+  }
+
   updateTargetPreview();
-
   targetOverlay.classList.add('show');
   // Autofocus + select-all, so re-entering a value is a single keystroke away.
-  requestAnimationFrame(() => { input.focus(); input.select(); });
+  requestAnimationFrame(() => { els.kcal.focus(); els.kcal.select(); });
 }
+
 function closeTargetSheet() {
   targetOverlay.classList.remove('show');
 }
 
-// Live preview of the scaled macro goals as the user types a new target —
-// same K = target / base.daily_calorie_target math as scaleCatalog(), just
-// read-only here (doesn't touch CATALOG/STATE until the user actually saves).
+// Live, read-only preview: the 4/9/4 total and the percentage split the
+// current inputs produce. Touches nothing in CATALOG/STATE — the hero card
+// and category budgets only move when the user actually saves.
 function updateTargetPreview() {
-  const input = document.getElementById('targetInput');
-  const previewEl = document.getElementById('targetPreview');
-  if (!input || !previewEl) return;
+  const els = targetSheetEls();
+  if (!els.preview) return;
 
-  const val = parseInt(input.value, 10);
-  if (!Number.isFinite(val) || val <= 0 || !BASE_CATALOG) {
-    previewEl.textContent = '';
+  const macros = readMacroInputs(els);
+  const total = macrosToKcal(macros);
+
+  if (!total) {
+    els.preview.innerHTML = 'Вкажіть макроси, щоб побачити денну ціль.';
+    if (els.split) els.split.innerHTML = '';
     return;
   }
-  const k = val / BASE_CATALOG.daily_calorie_target;
-  const protein = Math.round(BASE_CATALOG.protein_goal * k);
-  const fat = Math.round(BASE_CATALOG.fat_goal * k);
-  const carbs = Math.round(BASE_CATALOG.carbs_goal * k);
-  previewEl.innerHTML = `Білки <b>${protein}г</b> • Жири <b>${fat}г</b> • Вуглеводи <b>${carbs}г</b>`;
+
+  els.preview.innerHTML =
+    `Разом <b>${total} ккал</b> — Б <b>${macros.protein}г</b> • Ж <b>${macros.fat}г</b> • В <b>${macros.carbs}г</b>`;
+
+  if (els.split) {
+    els.split.innerHTML = MACRO_FIELDS.map((f) => {
+      const kcal = macros[f.key] * KCAL_PER_G[f.key];
+      const pct = Math.round((kcal / total) * 100);
+      // Below ~12% the label is wider than its own segment, and an
+      // overflowing "8%" reads as belonging to the neighbouring colour.
+      const label = pct >= 12 ? `<span>${pct}%</span>` : '';
+      return `<div class="macro-split-seg ${f.key}" style="flex-grow:${Math.max(kcal, 0.0001)}">${label}</div>`;
+    }).join('');
+  }
 }
 
 function wireUpTargetForm() {
-  const input = document.getElementById('targetInput');
-  const btn = document.getElementById('targetSaveBtn');
-  const errorEl = document.getElementById('targetError');
-  if (!input || !btn || !errorEl) return;
+  const els = targetSheetEls();
+  if (!els.kcal || !els.save || !els.error) return;
 
-  input.addEventListener('input', updateTargetPreview);
+  // Macro edited → calories follow, exactly, with no rounding step in
+  // between (the total IS the sum, by definition).
+  for (const f of MACRO_FIELDS) {
+    els[f.key]?.addEventListener('input', () => {
+      const macros = readMacroInputs(els);
+      els.kcal.value = macrosToKcal(macros);
+      if (els.note) els.note.style.display = 'none';
+      updateTargetPreview();
+    });
+  }
+
+  // Calories edited → macros rescale to match, preserving their split.
+  //
+  // Guarded on document.activeElement so this only runs for real typing in
+  // the calorie field, never for the programmatic writes the macro handler
+  // above makes — otherwise the two handlers would bounce values off each
+  // other and the user's grams would drift away under their own fingers.
+  els.kcal.addEventListener('input', () => {
+    if (document.activeElement !== els.kcal) return;
+    const val = parseInt(els.kcal.value, 10);
+    if (!Number.isFinite(val) || val <= 0) { updateTargetPreview(); return; }
+
+    const macros = readMacroInputs(els);
+    if (!macrosToKcal(macros)) { updateTargetPreview(); return; }
+
+    writeMacroInputs(els, scaleMacrosToKcal(macros, val));
+    if (els.note) els.note.style.display = 'none';
+    updateTargetPreview();
+  });
 
   async function submit() {
-    errorEl.textContent = '';
-    const val = parseInt(input.value, 10);
-    if (!Number.isFinite(val) || val < MIN_DAILY_TARGET || val > MAX_DAILY_TARGET) {
-      errorEl.textContent = `Введіть коректну ціль (${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET} ккал).`;
+    els.error.textContent = '';
+
+    const macros = normalizeMacroTargets(readMacroInputs(els));
+    if (!macros) {
+      els.error.textContent =
+        `Білки 0–${MACRO_BOUNDS.protein.max}г, жири 0–${MACRO_BOUNDS.fat.max}г, вуглеводи 0–${MACRO_BOUNDS.carbs.max}г.`;
       return;
     }
 
-    btn.disabled = true;
+    // The macros decide the calorie target, not the calorie field — see the
+    // block comment above MACRO_FIELDS. Anything else risks saving a total
+    // that the hero card's own P/F/C rows visibly contradict.
+    const total = macrosToKcal(macros);
+    if (total < MIN_DAILY_TARGET || total > MAX_DAILY_TARGET) {
+      els.error.textContent = `Ці макроси дають ${total} ккал. Допустимо ${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET} ккал.`;
+      return;
+    }
+
+    els.save.disabled = true;
     haptic('impact', 'medium');
 
-    // OPTIMISTIC: rescale every category/macro limit and re-render
-    // instantly, then persist to the server in the background — same
-    // pattern as every other write in this app (see persistAndSync()).
-    applyDailyTarget(val);
+    // OPTIMISTIC: rescale every category limit, repaint the hero card's
+    // P/F/C rows, and re-render instantly, then persist to the server in
+    // the background — same pattern as every other write in this app (see
+    // persistAndSync()). Category budgets scale by total / base_total,
+    // which is exactly the new/old ratio applied cumulatively.
+    applyTargets(total, macros);
     haptic('notification', 'success');
-    showToast('Денну ціль оновлено 🎯');
+    showToast('Ціль і макроси оновлено 🎯');
     closeTargetSheet();
 
     try {
-      await saveDailyTargetToServer(val);
+      await saveTargetsToServer(total, macros);
     } catch (err) {
-      // Non-fatal from the user's point of view — the local value is
+      // Non-fatal from the user's point of view — the local values are
       // already correct (applied above); this just failed to reach the
       // server, so the next check-auth background refresh or another save
       // attempt will pick it up.
       console.warn('[target] failed to persist to server:', err.message);
     } finally {
-      btn.disabled = false;
+      els.save.disabled = false;
     }
   }
 
-  btn.addEventListener('click', submit);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  els.save.addEventListener('click', submit);
+  for (const id of ['targetInput', ...MACRO_FIELDS.map((f) => f.inputId)]) {
+    document.getElementById(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  }
 }
 
 const targetOverlay = document.getElementById('targetOverlay');
@@ -2739,10 +3015,18 @@ async function checkAuthInBackground() {
       showLockScreen();
       return;
     }
-    // Picks up a daily_target changed on another device since this device
-    // last opened the app — no-ops (see applyDailyTarget) if it matches
-    // what's already applied here.
-    applyDailyTarget(body.daily_target);
+    // Picks up targets changed on another device since this device last
+    // opened the app — no-ops (see applyTargets) if they match what's
+    // already applied here.
+    //
+    // The macros are passed through normalizeMacroTargets, so a response
+    // carrying nulls (user has no custom macros) correctly resets this
+    // device to derived macros rather than stranding a stale local copy.
+    applyTargets(body.daily_target, normalizeMacroTargets({
+      protein: body.target_protein,
+      fat: body.target_fat,
+      carbs: body.target_carbs,
+    }));
   } catch (err) {
     console.warn('[auth] background re-check failed (non-fatal):', err);
   }
@@ -2784,6 +3068,11 @@ async function boot() {
           if (Number.isFinite(body.daily_target) && body.daily_target > 0) {
             saveCachedDailyTarget(Math.round(body.daily_target));
           }
+          saveCachedMacroTargets(normalizeMacroTargets({
+            protein: body.target_protein,
+            fat: body.target_fat,
+            carbs: body.target_carbs,
+          }));
           hideLockScreen();
           await init();
           return;
