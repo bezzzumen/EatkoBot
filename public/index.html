@@ -731,6 +731,71 @@
   .preview-line { text-align: center; font-size: 12.5px; color: var(--tg-hint); padding-bottom: 6px; font-weight: 500; }
   .preview-line b { color: var(--tg-text); }
 
+  /* ===== CUSTOM MACRO TARGETS (target sheet) =====
+     Three gram fields sitting under the calorie field, each carrying the
+     same accent its row uses on the hero card, so the connection between
+     "the number I typed here" and "the bar that moved up there" is visible
+     rather than something the user has to infer. Contrast is held to the
+     same bar as every other input in the app: #0F172A text on a near-white
+     field, hint-grey labels, accent-coloured focus ring. */
+  .macro-target-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px;
+  }
+  .macro-target-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .macro-target-field .macro-target-label {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 700; color: var(--tg-text);
+    letter-spacing: 0.01em;
+  }
+  .macro-target-field .macro-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .macro-target-field.protein .macro-dot { background: linear-gradient(135deg, var(--protein-1), var(--protein-2)); }
+  .macro-target-field.fat     .macro-dot { background: linear-gradient(135deg, var(--fat-1), var(--fat-2)); }
+  .macro-target-field.carbs   .macro-dot { background: linear-gradient(135deg, var(--carbs-1), var(--carbs-2)); }
+
+  .macro-target-input-wrap { position: relative; display: flex; align-items: center; }
+  .macro-target-input-wrap input {
+    width: 100%; padding: 11px 26px 11px 12px; border-radius: 13px;
+    border: 1px solid var(--glass-border); background: var(--tg-secondary-bg);
+    color: var(--tg-text); font-size: 15px; font-weight: 700;
+    font-family: 'Plus Jakarta Sans', sans-serif; font-variant-numeric: tabular-nums;
+    -moz-appearance: textfield;
+  }
+  .macro-target-input-wrap input::-webkit-outer-spin-button,
+  .macro-target-input-wrap input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .macro-target-input-wrap input:focus { outline: none; border-color: var(--aurora-1); box-shadow: 0 0 0 3px var(--success-glow); }
+  .macro-target-input-wrap .g-suffix {
+    position: absolute; right: 10px; pointer-events: none;
+    font-size: 11.5px; font-weight: 700; color: var(--tg-hint);
+  }
+
+  /* Proportional 4/9/4 calorie split. Segments are flex-grown by their own
+     kcal contribution, so the bar is the split rather than a legend beside
+     it. Percentages are hidden below ~13% width, where the label would
+     overflow its own segment and read as belonging to the neighbour. */
+  .macro-split-bar {
+    display: flex; height: 26px; border-radius: var(--radius-pill); overflow: hidden;
+    border: 1px solid var(--glass-border); margin-bottom: 10px; background: var(--glass-bg);
+  }
+  .macro-split-bar:empty { display: none; }
+  .macro-split-seg {
+    display: flex; align-items: center; justify-content: center; min-width: 0;
+    font-size: 10.5px; font-weight: 800; color: #ffffff;
+    letter-spacing: 0.02em; transition: flex-grow 0.25s cubic-bezier(.2,.8,.2,1);
+  }
+  .macro-split-seg span { overflow: hidden; white-space: nowrap; }
+  .macro-split-seg.protein { background: linear-gradient(135deg, var(--protein-1), var(--protein-2)); }
+  .macro-split-seg.fat     { background: linear-gradient(135deg, var(--fat-1), var(--fat-2)); }
+  .macro-split-seg.carbs   { background: linear-gradient(135deg, var(--carbs-1), var(--carbs-2)); }
+
+  .target-note {
+    display: none; margin-bottom: 12px; padding: 9px 11px;
+    border-radius: var(--radius-sm);
+    background: rgba(217, 119, 6, 0.09); border: 1px solid rgba(217, 119, 6, 0.3);
+    color: #92400e; font-size: 11.5px; font-weight: 600; line-height: 1.45;
+  }
+
   /* ===== КБЖУ CALCULATOR ===== */
   .calc-result {
     display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -1386,7 +1451,7 @@
         </svg></div>
         <div>
           <h2>Денна ціль</h2>
-          <div class="sub">Усі ліміти масштабуються під це число</div>
+          <div class="sub">Ккал = Б×4 + Ж×9 + В×4 · ліміти категорій масштабуються</div>
         </div>
       </div>
       <button class="sheet-close" id="targetClose">✕</button>
@@ -1399,8 +1464,36 @@
           <input type="number" inputmode="numeric" step="10" id="targetInput" placeholder="напр. 2220" />
           <div class="unit-label">ккал</div>
         </div>
-        <div class="weight-error" id="targetError"></div>
       </div>
+
+      <div class="custom-input-label">Макроси (грами)</div>
+      <div class="macro-target-grid">
+        <div class="macro-target-field protein">
+          <div class="macro-target-label"><span class="macro-dot"></span>Білки</div>
+          <div class="macro-target-input-wrap">
+            <input type="number" inputmode="numeric" min="0" step="1" id="macroProteinInput" placeholder="0" />
+            <span class="g-suffix">г</span>
+          </div>
+        </div>
+        <div class="macro-target-field fat">
+          <div class="macro-target-label"><span class="macro-dot"></span>Жири</div>
+          <div class="macro-target-input-wrap">
+            <input type="number" inputmode="numeric" min="0" step="1" id="macroFatInput" placeholder="0" />
+            <span class="g-suffix">г</span>
+          </div>
+        </div>
+        <div class="macro-target-field carbs">
+          <div class="macro-target-label"><span class="macro-dot"></span>Вуглеводи</div>
+          <div class="macro-target-input-wrap">
+            <input type="number" inputmode="numeric" min="0" step="1" id="macroCarbsInput" placeholder="0" />
+            <span class="g-suffix">г</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="target-note" id="targetNormalizeNote"></div>
+      <div class="macro-split-bar" id="targetSplit"></div>
+      <div class="weight-error" id="targetError"></div>
       <div class="preview-line" id="targetPreview"></div>
     </div>
     <div class="sheet-footer">
