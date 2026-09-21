@@ -301,6 +301,9 @@ async function ensureSchema() {
       first_name TEXT,
       username TEXT,
       daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET},
+      target_protein INTEGER,
+      target_fat INTEGER,
+      target_carbs INTEGER,
       created_at TEXT DEFAULT (datetime('now'))
     )
   `);
@@ -313,12 +316,24 @@ async function ensureSchema() {
   // expected, and safely ignored below rather than left to crash
   // ensureSchema (and therefore boot).
   //
-  // See ensureUsersDailyTargetColumn() below for how the "column already
+  // See ensureUsersColumn() below for how the "column already
   // exists" case is detected and ignored. Any OTHER error still throws,
   // since that would mean something genuinely unexpected went wrong (e.g.
   // a real connectivity or permissions problem) and ensureSchema should
   // not silently continue past that.
-  await ensureUsersDailyTargetColumn();
+  await ensureUsersColumn('daily_target', `INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`);
+
+  // Custom macro targets, in grams. Deliberately NULLABLE with no default,
+  // unlike daily_target above: NULL is a meaningful state here — "this user
+  // has never set custom macros, so derive them by scaling the base catalog"
+  // (see scaleCatalog() in app.js). A default would erase that distinction.
+  //
+  // It also happens to be the only shape SQLite's ALTER TABLE ADD COLUMN
+  // accepts cleanly on a table that already has rows: NOT NULL without a
+  // default is rejected outright.
+  await ensureUsersColumn('target_protein', 'INTEGER');
+  await ensureUsersColumn('target_fat', 'INTEGER');
+  await ensureUsersColumn('target_carbs', 'INTEGER');
 
   // One row per (user, date) — a snapshot of that day's totals, upserted
   // every time the client syncs. Only the latest snapshot per day is kept.
@@ -393,9 +408,13 @@ async function ensureSchema() {
   `);
 }
 
-// Adds users.daily_target on deployments whose `users` table predates the
-// column. Two layers, because this is on the boot path and a false throw
-// here means the whole service 503s:
+// Adds a column to `users` on deployments whose table predates it. Was
+// ensureUsersDailyTargetColumn(); generalized to any column so the three
+// macro-target columns get the exact same crash-proofing that daily_target
+// needed, rather than three hand-copied variants that can drift apart.
+//
+// Two layers, because this is on the boot path and a false throw here means
+// the whole service 503s:
 //
 //   1. PRAGMA table_info(users) — if the column is already there, the
 //      ALTER is never attempted, so the common case (every redeploy of an
@@ -408,20 +427,23 @@ async function ensureSchema() {
 //      "SQLite error: duplicate column name: daily_target" on err.cause,
 //      so the old err.message-only check never matched and rethrew — which
 //      is what crashed startup in production.
-async function ensureUsersDailyTargetColumn() {
+//
+// `columnDdl` is everything after the column name in the ALTER, e.g.
+// "INTEGER" or "INTEGER NOT NULL DEFAULT 2220".
+async function ensureUsersColumn(columnName, columnDdl) {
   try {
     const info = await runTursoQuery(
-      'ensureSchema: users.daily_target pragma check',
+      `ensureSchema: users.${columnName} pragma check`,
       'PRAGMA table_info(users)'
     );
     const hasColumn = (info?.rows || []).some((row) => {
       // PRAGMA rows come back keyed by name on this driver, but fall back
       // to positional access (index 1 is `name`) just in case.
       const name = row?.name ?? row?.[1];
-      return String(name).toLowerCase() === 'daily_target';
+      return String(name).toLowerCase() === columnName.toLowerCase();
     });
     if (hasColumn) {
-      console.log('[ensureSchema] Column users.daily_target already present, skipping migration');
+      console.log(`[ensureSchema] Column users.${columnName} already present, skipping migration`);
       return;
     }
   } catch (err) {
@@ -432,15 +454,15 @@ async function ensureUsersDailyTargetColumn() {
 
   try {
     await runTursoQuery(
-      'ensureSchema: users.daily_target migration',
-      `ALTER TABLE users ADD COLUMN daily_target INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`
+      `ensureSchema: users.${columnName} migration`,
+      `ALTER TABLE users ADD COLUMN ${columnName} ${columnDdl}`
     );
-    console.log('[ensureSchema] Added users.daily_target column');
+    console.log(`[ensureSchema] Added users.${columnName} column`);
   } catch (err) {
     const fullError = collectErrorText(err);
 
     if (/duplicate column/i.test(fullError) || /already exists/i.test(fullError)) {
-      console.log('[ensureSchema] Column users.daily_target already exists, skipping migration');
+      console.log(`[ensureSchema] Column users.${columnName} already exists, skipping migration`);
     } else {
       throw err;
     }
@@ -498,6 +520,73 @@ async function updateUserDailyTarget(userId, dailyTarget) {
     'updateUserDailyTarget',
     'UPDATE users SET daily_target = ? WHERE id = ?',
     [dailyTarget, userId]
+  );
+}
+
+// The full target set: calories plus the three custom macro grams.
+//
+// Each macro comes back as a number OR null, and null is load-bearing —
+// it means "this user has never set a custom value", which the client
+// answers by deriving that macro from the scaled base catalog instead
+// (scaleCatalog() in app.js). Do NOT coerce these to the PROTEIN/FAT/
+// CARBS_TARGET_G defaults here: those defaults are only correct at the
+// base 2220 target, and substituting them would silently pin a user on a
+// 1600 or 3000 kcal target to base-2220 macro grams.
+//
+// The SELECT is wrapped because it names columns added by migration. If
+// ensureSchema hasn't run (or partially failed), a "no such column" here
+// would otherwise 502 the client's entire app-open path over nothing more
+// than a missing optional setting — so it degrades to calories-only.
+async function getUserTargets(userId) {
+  if (!turso) {
+    return { daily_target: DAILY_CALORIE_TARGET, target_protein: null, target_fat: null, target_carbs: null };
+  }
+
+  try {
+    const result = await runTursoQuery(
+      'getUserTargets',
+      'SELECT daily_target, target_protein, target_fat, target_carbs FROM users WHERE id = ?',
+      [userId]
+    );
+    const row = result.rows[0] || {};
+    const num = (v) => (v == null ? null : Number(v));
+    return {
+      daily_target: row.daily_target == null ? DAILY_CALORIE_TARGET : Number(row.daily_target),
+      target_protein: num(row.target_protein),
+      target_fat: num(row.target_fat),
+      target_carbs: num(row.target_carbs),
+    };
+  } catch (err) {
+    console.warn(`[getUserTargets] falling back to calories-only: ${err?.message}`);
+    const daily_target = await getUserDailyTarget(userId);
+    return { daily_target, target_protein: null, target_fat: null, target_carbs: null };
+  }
+}
+
+// Persists calories + macros in ONE statement, so the two can never land
+// out of sync from a half-applied write (the client computes the calorie
+// total from the macros via 4/9/4, so a partial save would leave the hero
+// card showing a total that its own macro rows don't add up to).
+//
+// Any of the three macros may be passed as null to clear it back to
+// "derive from the scaled catalog". Validation lives in server.js.
+async function updateUserTargets(userId, { dailyTarget, targetProtein, targetFat, targetCarbs }) {
+  if (!turso) throw new Error('Database not configured');
+  await runTursoQuery(
+    'updateUserTargets',
+    `UPDATE users
+        SET daily_target   = ?,
+            target_protein = ?,
+            target_fat     = ?,
+            target_carbs   = ?
+      WHERE id = ?`,
+    [
+      dailyTarget,
+      targetProtein == null ? null : targetProtein,
+      targetFat == null ? null : targetFat,
+      targetCarbs == null ? null : targetCarbs,
+      userId,
+    ]
   );
 }
 
@@ -792,6 +881,8 @@ module.exports = {
   getOrCreateUser,
   getUserDailyTarget,
   updateUserDailyTarget,
+  getUserTargets,
+  updateUserTargets,
   upsertDailyStatus,
   getAllStatusForDate,
   isUserAllowed,
