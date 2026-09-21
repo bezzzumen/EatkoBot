@@ -474,6 +474,7 @@ const MIN_DAILY_TARGET = 800;
 const MAX_DAILY_TARGET = 6000;
 const DAILY_TARGET_CACHE_KEY = 'eatko_daily_target_v1';
 const MACRO_TARGETS_CACHE_KEY = 'eatko_macro_targets_v1';
+const CALC_MODE_CACHE_KEY = 'eatko_calc_mode_v1';
 
 // Atwater factors. The one place these live — every kcal-from-grams
 // computation in the target editor goes through macrosToKcal() below.
@@ -488,6 +489,17 @@ const MACRO_BOUNDS = {
   fat: { min: 0, max: 400 },
   carbs: { min: 0, max: 1200 },
 };
+
+// Default P/F/C split used ONLY in "За калоріями" mode, to turn a typed
+// calorie target into grams. Deliberately separate from BASE_CATALOG's own
+// protein_goal/fat_goal/carbs_goal (135/62/215 at the base 2220 — which
+// don't even sum to 2220 under 4/9/4, since the two were set independently
+// in database.js): that ratio is a display default for the macros shown
+// before anyone edits a target, while this split is a stated, user-facing
+// rule ("30/30/40") this mode promises to apply every time. Conflating the
+// two would mean the same "За калоріями" action producing different macro
+// grams depending on whether the user had opened the sheet before.
+const CALORIE_MODE_SPLIT = { protein: 0.30, fat: 0.30, carbs: 0.40 };
 
 let BASE_CATALOG = null;
 let userDailyTarget = DEFAULT_DAILY_TARGET;
@@ -546,6 +558,28 @@ function saveCachedMacroTargets(macros) {
   } catch { /* non-fatal */ }
 }
 
+// Which of the two target-sheet workflows the user last used — 'calories'
+// (type kcal, macros follow the 30/30/40 split) or 'macros' (type grams,
+// kcal follows). Purely a UI convenience: it decides which fields the
+// sheet opens with editable and doesn't affect what's actually saved as
+// the user's target (that's always the resulting kcal + all three grams,
+// regardless of which mode produced them) — so it's cached locally only,
+// same as the other two target caches, rather than round-tripped through
+// POST /api/user/settings. A user who sets their target on one device and
+// opens the app on another will just see the sheet default back to
+// "За калоріями" there; their actual saved target is unaffected either way.
+function loadCachedCalcMode() {
+  try {
+    const raw = localStorage.getItem(CALC_MODE_CACHE_KEY);
+    return raw === 'macros' ? 'macros' : 'calories'; // anything else (incl. unset) defaults to calories
+  } catch {
+    return 'calories';
+  }
+}
+function saveCachedCalcMode(mode) {
+  try { localStorage.setItem(CALC_MODE_CACHE_KEY, mode === 'macros' ? 'macros' : 'calories'); } catch { /* non-fatal */ }
+}
+
 // The macro goals currently in force: the user's own grams if they've set
 // any, otherwise the base goals scaled to their calorie target — i.e.
 // exactly what the hero card is showing right now, either way. This is what
@@ -562,32 +596,22 @@ function effectiveMacroGoals() {
   };
 }
 
-// Rescales a macro triple so its 4/9/4 total lands on `target`, keeping
-// the existing split between the three.
-//
-// The trailing residual step matters more than it looks: rounding three
-// grams independently can leave the total a dozen kcal off, and since the
-// editor treats the macros as the source of truth for the calorie target
-// (see submit() below), that drift would otherwise surface as the user
-// typing 2500 and the hero card reading 2489. Carbs absorb the remainder
-// because they're the largest and least precision-sensitive of the three.
-//
-// Whole grams can't always land it dead-on — a residual that isn't a
-// multiple of 4 leaves up to ±2 kcal, which no integer gram count can
-// close. That's inside the server's rounding tolerance and invisible on a
-// four-digit number, so it's carried rather than chased.
-function scaleMacrosToKcal(macros, target) {
-  const current = macrosToKcal(macros);
-  if (!current || !Number.isFinite(target) || target <= 0) return { ...macros };
+// "За калоріями" mode's kcal → grams conversion, via CALORIE_MODE_SPLIT
+// (30% protein / 30% fat / 40% carbs by calories, not by weight). Same
+// residual-into-carbs rounding fixup as scaleMacrosToKcal above, for the
+// same reason: three independently-rounded grams can land the 4/9/4 total
+// a few kcal off what was typed, and the calorie field this mode shows is
+// exactly what the user typed, so the gap should be as small as possible.
+function splitKcalToMacros(kcal) {
+  if (!Number.isFinite(kcal) || kcal <= 0) return { protein: 0, fat: 0, carbs: 0 };
 
-  const ratio = target / current;
   const scaled = {
-    protein: Math.max(0, Math.round(macros.protein * ratio)),
-    fat: Math.max(0, Math.round(macros.fat * ratio)),
-    carbs: Math.max(0, Math.round(macros.carbs * ratio)),
+    protein: Math.max(0, Math.round((kcal * CALORIE_MODE_SPLIT.protein) / KCAL_PER_G.protein)),
+    fat: Math.max(0, Math.round((kcal * CALORIE_MODE_SPLIT.fat) / KCAL_PER_G.fat)),
+    carbs: Math.max(0, Math.round((kcal * CALORIE_MODE_SPLIT.carbs) / KCAL_PER_G.carbs)),
   };
 
-  const residual = target - macrosToKcal(scaled);
+  const residual = kcal - macrosToKcal(scaled);
   scaled.carbs = Math.max(0, scaled.carbs + Math.round(residual / KCAL_PER_G.carbs));
   return scaled;
 }
@@ -1083,33 +1107,43 @@ wireUpWeightForm();
 // Custom daily calorie target — UI
 // ---------------------------------------------------------------------------
 
-// The sheet's four inputs are two views of ONE number, kept coupled while
-// the user types:
+// Two workflows share the same four fields, switched by a segmented
+// toggle in the sheet (see CALORIE_MODE_SPLIT and targetSheetMode below):
 //
-//   • edit a macro  → the calorie field becomes 4P + 9F + 4C
-//   • edit calories → the three macros rescale to hit that total exactly,
-//                     keeping the split they already had
+//   "За калоріями" — the user types kcal; the three macro fields are
+//     locked and follow it via the fixed 30/30/40 split.
+//   "За БЖВ (кастом)" — the user types grams; the kcal field is locked
+//     and follows them via 4/9/4.
 //
-// so whatever is on screen always satisfies the 4/9/4 identity. The macros
-// are the source of truth on save (see submit below): the calorie field is
-// a convenience scaler for people who think in kcal first, not a fifth
-// independent value that could disagree with the other three.
+// Whichever mode produced them, the macros are what's actually saved (see
+// submit below) — the locked field in either mode is a live readout, not a
+// value the app is guessing at.
 const MACRO_FIELDS = [
-  { key: 'protein', inputId: 'macroProteinInput' },
-  { key: 'fat', inputId: 'macroFatInput' },
-  { key: 'carbs', inputId: 'macroCarbsInput' },
+  { key: 'protein', inputId: 'macroProteinInput', wrapId: 'proteinFieldWrap' },
+  { key: 'fat', inputId: 'macroFatInput', wrapId: 'fatFieldWrap' },
+  { key: 'carbs', inputId: 'macroCarbsInput', wrapId: 'carbsFieldWrap' },
 ];
+
+// Which workflow the sheet is currently showing. Set from the cached
+// preference each time the sheet opens (see openTargetSheet) and updated
+// live as the user taps the toggle — see loadCachedCalcMode for why this
+// is local-only and not part of the saved target payload.
+let targetSheetMode = 'calories';
 
 function targetSheetEls() {
   const els = {
     kcal: document.getElementById('targetInput'),
+    kcalWrap: document.getElementById('targetKcalWrap'),
     preview: document.getElementById('targetPreview'),
     split: document.getElementById('targetSplit'),
     error: document.getElementById('targetError'),
     save: document.getElementById('targetSaveBtn'),
     note: document.getElementById('targetNormalizeNote'),
   };
-  for (const f of MACRO_FIELDS) els[f.key] = document.getElementById(f.inputId);
+  for (const f of MACRO_FIELDS) {
+    els[f.key] = document.getElementById(f.inputId);
+    els[`${f.key}Wrap`] = document.getElementById(f.wrapId);
+  }
   return els;
 }
 
@@ -1132,6 +1166,63 @@ function writeMacroInputs(els, macros) {
   }
 }
 
+// Applies `mode` to the sheet's DOM: which fields are editable vs. locked,
+// the toggle's active button + sliding thumb, and the explainer note.
+// Pure UI — doesn't touch field values (recomputeFieldsForMode, called
+// separately, does that) so the two stay independent and callable in
+// either order.
+function applyCalcModeToUI(els, mode) {
+  const isCalories = mode === 'calories';
+
+  els.kcal.disabled = !isCalories;
+  els.kcalWrap?.classList.toggle('locked', !isCalories);
+  for (const f of MACRO_FIELDS) {
+    if (els[f.key]) els[f.key].disabled = isCalories;
+    els[`${f.key}Wrap`]?.classList.toggle('locked', isCalories);
+  }
+
+  document.querySelectorAll('#calcModeToggle [data-mode]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  positionToggleThumb('calcModeToggle', 'calcModeToggleThumb', '[data-mode].active');
+
+  if (els.note) {
+    if (isCalories) {
+      const pct = (frac) => Math.round(frac * 100);
+      els.note.style.display = 'block';
+      els.note.textContent =
+        `Стандартний розподіл: ${pct(CALORIE_MODE_SPLIT.protein)}% білки • ` +
+        `${pct(CALORIE_MODE_SPLIT.fat)}% жири • ${pct(CALORIE_MODE_SPLIT.carbs)}% вуглеводи.`;
+    } else {
+      els.note.style.display = 'none';
+    }
+  }
+}
+
+// Recomputes the locked field(s) from the editable one(s), per the current
+// mode. Called after every edit AND right after a mode switch, so flipping
+// the toggle immediately shows values consistent with whatever was already
+// on screen rather than waiting for the next keystroke.
+function recomputeFieldsForMode(els, mode) {
+  if (mode === 'calories') {
+    const kcal = parseInt(els.kcal.value, 10);
+    writeMacroInputs(els, splitKcalToMacros(Number.isFinite(kcal) && kcal > 0 ? kcal : 0));
+  } else {
+    const macros = readMacroInputs(els);
+    const total = macrosToKcal(macros);
+    els.kcal.value = total || '';
+  }
+}
+
+function setCalcMode(els, mode) {
+  if (mode !== 'calories' && mode !== 'macros') return;
+  targetSheetMode = mode;
+  saveCachedCalcMode(mode);
+  applyCalcModeToUI(els, mode);
+  recomputeFieldsForMode(els, mode);
+  updateTargetPreview();
+}
+
 function openTargetSheet() {
   const els = targetSheetEls();
   if (!els.kcal || !els.error || !els.save) return;
@@ -1139,40 +1230,30 @@ function openTargetSheet() {
   els.error.textContent = '';
   els.save.disabled = false;
 
-  // Prefill from what the hero card is showing right now — the user's own
-  // grams if they've set any, otherwise the scaled base goals.
-  const current = effectiveMacroGoals();
-  const currentKcal = macrosToKcal(current);
+  targetSheetMode = loadCachedCalcMode();
 
-  // The base catalog's macro goals don't add up to its calorie target
-  // under 4/9/4 (135/62/215 comes to 1958, not 2220 — the two were set
-  // independently in database.js). That's harmless while macros are merely
-  // derived for display, but this sheet makes them authoritative, so the
-  // two have to be reconciled before the user can edit them or the first
-  // keystroke would yank the calorie target down by ~12%.
-  //
-  // Reconciling on OPEN rather than on first edit is the deliberate part:
-  // the adjustment is then visible in the fields from the outset, with the
-  // note below explaining it, instead of firing as a surprise jump halfway
-  // through typing.
-  const needsNormalizing = !userMacroTargets && Math.abs(currentKcal - userDailyTarget) > 2;
-  const prefill = needsNormalizing ? scaleMacrosToKcal(current, userDailyTarget) : current;
-
-  writeMacroInputs(els, prefill);
-  els.kcal.value = macrosToKcal(prefill);
-
-  if (els.note) {
-    els.note.style.display = needsNormalizing ? 'block' : 'none';
-    if (needsNormalizing) {
-      els.note.textContent =
-        `Макроси підігнані під ${userDailyTarget} ккал за формулою 4/9/4 — базові значення давали ${currentKcal} ккал.`;
-    }
+  if (targetSheetMode === 'calories') {
+    // Prefill from the calorie target currently in force; macros follow
+    // via the fixed split, same as every subsequent edit in this mode.
+    els.kcal.value = userDailyTarget;
+  } else {
+    // Prefill from whatever the hero card is showing right now — the
+    // user's own grams if they've set any, otherwise the base goals
+    // scaled to their calorie target. The kcal field then derives from
+    // that, so there's nothing to reconcile on open: the displayed total
+    // is by definition the sum of what's in the three fields.
+    writeMacroInputs(els, effectiveMacroGoals());
   }
 
+  applyCalcModeToUI(els, targetSheetMode);
+  recomputeFieldsForMode(els, targetSheetMode);
   updateTargetPreview();
+
   targetOverlay.classList.add('show');
-  // Autofocus + select-all, so re-entering a value is a single keystroke away.
-  requestAnimationFrame(() => { els.kcal.focus(); els.kcal.select(); });
+  // Autofocus + select-all the editable field, so re-entering a value is a
+  // single keystroke away.
+  const focusEl = targetSheetMode === 'calories' ? els.kcal : els.protein;
+  requestAnimationFrame(() => { focusEl?.focus(); focusEl?.select(); });
 }
 
 function closeTargetSheet() {
@@ -1190,7 +1271,7 @@ function updateTargetPreview() {
   const total = macrosToKcal(macros);
 
   if (!total) {
-    els.preview.innerHTML = 'Вкажіть макроси, щоб побачити денну ціль.';
+    els.preview.innerHTML = 'Вкажіть значення, щоб побачити денну ціль.';
     if (els.split) els.split.innerHTML = '';
     return;
   }
@@ -1214,39 +1295,43 @@ function wireUpTargetForm() {
   const els = targetSheetEls();
   if (!els.kcal || !els.save || !els.error) return;
 
-  // Macro edited → calories follow, exactly, with no rounding step in
-  // between (the total IS the sum, by definition).
+  document.querySelectorAll('#calcModeToggle [data-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.mode === targetSheetMode) return;
+      haptic('impact', 'light');
+      setCalcMode(els, btn.dataset.mode);
+    });
+  });
+  window.addEventListener('resize', () => {
+    if (targetOverlay?.classList.contains('show')) positionToggleThumb('calcModeToggle', 'calcModeToggleThumb', '[data-mode].active');
+  });
+
+  // Calories mode: typing kcal recomputes the (locked) macro fields via
+  // the fixed split. Disabled fields never fire 'input', so no mode guard
+  // is needed here beyond what `disabled` already enforces.
+  els.kcal.addEventListener('input', () => {
+    if (document.activeElement !== els.kcal) return;
+    recomputeFieldsForMode(els, 'calories');
+    updateTargetPreview();
+  });
+
+  // Macros mode: typing any gram field recomputes the (locked) kcal field
+  // as their exact 4/9/4 sum.
   for (const f of MACRO_FIELDS) {
     els[f.key]?.addEventListener('input', () => {
-      const macros = readMacroInputs(els);
-      els.kcal.value = macrosToKcal(macros);
-      if (els.note) els.note.style.display = 'none';
+      recomputeFieldsForMode(els, 'macros');
       updateTargetPreview();
     });
   }
 
-  // Calories edited → macros rescale to match, preserving their split.
-  //
-  // Guarded on document.activeElement so this only runs for real typing in
-  // the calorie field, never for the programmatic writes the macro handler
-  // above makes — otherwise the two handlers would bounce values off each
-  // other and the user's grams would drift away under their own fingers.
-  els.kcal.addEventListener('input', () => {
-    if (document.activeElement !== els.kcal) return;
-    const val = parseInt(els.kcal.value, 10);
-    if (!Number.isFinite(val) || val <= 0) { updateTargetPreview(); return; }
-
-    const macros = readMacroInputs(els);
-    if (!macrosToKcal(macros)) { updateTargetPreview(); return; }
-
-    writeMacroInputs(els, scaleMacrosToKcal(macros, val));
-    if (els.note) els.note.style.display = 'none';
-    updateTargetPreview();
-  });
-
   async function submit() {
     els.error.textContent = '';
 
+    // The macros are always what gets saved — in calories mode they were
+    // just derived a moment ago from the typed kcal via the fixed split;
+    // in macros mode the user typed them directly. Either way this keeps
+    // a single save path and a single shape of payload, and guarantees the
+    // hero card's P/F/C rows can never disagree with its own kcal target.
     const macros = normalizeMacroTargets(readMacroInputs(els));
     if (!macros) {
       els.error.textContent =
@@ -1254,12 +1339,9 @@ function wireUpTargetForm() {
       return;
     }
 
-    // The macros decide the calorie target, not the calorie field — see the
-    // block comment above MACRO_FIELDS. Anything else risks saving a total
-    // that the hero card's own P/F/C rows visibly contradict.
     const total = macrosToKcal(macros);
     if (total < MIN_DAILY_TARGET || total > MAX_DAILY_TARGET) {
-      els.error.textContent = `Ці макроси дають ${total} ккал. Допустимо ${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET} ккал.`;
+      els.error.textContent = `Це дає ${total} ккал. Допустимо ${MIN_DAILY_TARGET}–${MAX_DAILY_TARGET} ккал.`;
       return;
     }
 
@@ -1903,16 +1985,23 @@ function renderAnalyticsDiscipline(loggedDays, target) {
     </div>`;
 }
 
-// Slides the segmented-control thumb under the active button. Reads real
-// layout (offsetLeft/offsetWidth) rather than hardcoding 50%, so it stays
-// correct if the button copy or container width ever changes.
-function positionPeriodToggleThumb() {
-  const toggle = document.getElementById('analyticsPeriodToggle');
-  const thumb = document.getElementById('periodToggleThumb');
-  const activeBtn = toggle?.querySelector('[data-period].active');
+// Slides a segmented-control thumb under its container's active button.
+// Reads real layout (offsetLeft/offsetWidth) rather than hardcoding 50%, so
+// it stays correct if the button copy or container width ever changes.
+// Generalized from the analytics period toggle so the calc-mode toggle
+// (target sheet) can share the exact same behavior instead of a hand-copied
+// variant that could drift out of sync with it.
+function positionToggleThumb(toggleId, thumbId, activeSelector) {
+  const toggle = document.getElementById(toggleId);
+  const thumb = document.getElementById(thumbId);
+  const activeBtn = toggle?.querySelector(activeSelector);
   if (!toggle || !thumb || !activeBtn) return;
   thumb.style.width = `${activeBtn.offsetWidth}px`;
   thumb.style.transform = `translateX(${activeBtn.offsetLeft - 4}px)`;
+}
+
+function positionPeriodToggleThumb() {
+  positionToggleThumb('analyticsPeriodToggle', 'periodToggleThumb', '[data-period].active');
 }
 
 // Updates the "‹ 10 Серпня – 16 Серпня ›" label and enables/disables the
