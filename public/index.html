@@ -789,6 +789,18 @@
   .macro-split-seg.fat     { background: linear-gradient(135deg, var(--fat-1), var(--fat-2)); }
   .macro-split-seg.carbs   { background: linear-gradient(135deg, var(--carbs-1), var(--carbs-2)); }
 
+  .macro-target-input-wrap input:disabled,
+  .custom-input-row input:disabled {
+    background: var(--glass-bg-strong);
+    color: var(--tg-text);
+    cursor: not-allowed;
+    border-style: dashed;
+  }
+
+  .auto-tag { display: none; color: var(--tg-hint); font-weight: 600; font-size: 10.5px; margin-left: 3px; }
+  .custom-input-wrap.locked .auto-tag,
+  .macro-target-field.locked .auto-tag { display: inline; }
+
   .target-note {
     display: none; margin-bottom: 12px; padding: 9px 11px;
     border-radius: var(--radius-sm);
@@ -1458,8 +1470,14 @@
     </div>
 
     <div class="sheet-scroll">
-      <div class="custom-input-wrap">
-        <div class="custom-input-label">Ціль на день</div>
+      <div class="mode-toggle" id="calcModeToggle">
+        <div class="mode-toggle-thumb" id="calcModeToggleThumb"></div>
+        <button type="button" data-mode="calories" class="active">За калоріями</button>
+        <button type="button" data-mode="macros">За БЖВ (кастом)</button>
+      </div>
+
+      <div class="custom-input-wrap" id="targetKcalWrap">
+        <div class="custom-input-label">Ціль на день<span class="auto-tag">· авто</span></div>
         <div class="custom-input-row">
           <input type="number" inputmode="numeric" step="10" id="targetInput" placeholder="напр. 2220" />
           <div class="unit-label">ккал</div>
@@ -1468,22 +1486,22 @@
 
       <div class="custom-input-label">Макроси (грами)</div>
       <div class="macro-target-grid">
-        <div class="macro-target-field protein">
-          <div class="macro-target-label"><span class="macro-dot"></span>Білки</div>
+        <div class="macro-target-field protein" id="proteinFieldWrap">
+          <div class="macro-target-label"><span class="macro-dot"></span>Білки<span class="auto-tag">· авто</span></div>
           <div class="macro-target-input-wrap">
             <input type="number" inputmode="numeric" min="0" step="1" id="macroProteinInput" placeholder="0" />
             <span class="g-suffix">г</span>
           </div>
         </div>
-        <div class="macro-target-field fat">
-          <div class="macro-target-label"><span class="macro-dot"></span>Жири</div>
+        <div class="macro-target-field fat" id="fatFieldWrap">
+          <div class="macro-target-label"><span class="macro-dot"></span>Жири<span class="auto-tag">· авто</span></div>
           <div class="macro-target-input-wrap">
             <input type="number" inputmode="numeric" min="0" step="1" id="macroFatInput" placeholder="0" />
             <span class="g-suffix">г</span>
           </div>
         </div>
-        <div class="macro-target-field carbs">
-          <div class="macro-target-label"><span class="macro-dot"></span>Вуглеводи</div>
+        <div class="macro-target-field carbs" id="carbsFieldWrap">
+          <div class="macro-target-label"><span class="macro-dot"></span>Вуглеводи<span class="auto-tag">· авто</span></div>
           <div class="macro-target-input-wrap">
             <input type="number" inputmode="numeric" min="0" step="1" id="macroCarbsInput" placeholder="0" />
             <span class="g-suffix">г</span>
