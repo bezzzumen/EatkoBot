@@ -910,6 +910,165 @@ app.post('/api/weight', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Named food entries (Calculator "Назва страви" + "Історія за сьогодні")
+// ---------------------------------------------------------------------------
+// Unlike sync-status above (a once-a-day rollup the client already
+// computed), these four endpoints are a genuine per-item CRUD surface —
+// each Calculator submission that carries a food name becomes its own row
+// in food_entries (see database.js), editable and deletable individually.
+// Same auth + allowlist gate as the weight/settings endpoints
+// (authenticateAllowedUser, defined above), since this both reads and
+// writes real user data.
+
+const MAX_FOOD_NAME_LEN = 80;
+const MIN_ENTRY_CALORIES = 0;
+const MAX_ENTRY_CALORIES = 20000;
+const MAX_ENTRY_MACRO_GRAMS = 2000; // generous ceiling, same spirit as MACRO_LIMITS below — rejects fat-finger garbage, not diet choices
+
+// Validates + normalizes a create/update body. Returns { ok: true, value }
+// with value ready to hand straight to db.createFoodEntry/updateFoodEntry,
+// or { ok: false, error }. calories is required; food_name and the three
+// macros are all optional and independent of each other (unlike
+// /api/user/settings' macro fields, there's no "all three or none" rule
+// here — a Calculator entry can have calories with no macros at all).
+function parseFoodEntryBody(body) {
+  const rawName = typeof body?.food_name === 'string' ? body.food_name.trim() : '';
+  const food_name = rawName ? rawName.slice(0, MAX_FOOD_NAME_LEN) : null;
+
+  const calories = Number(body?.calories);
+  if (!Number.isFinite(calories) || calories < MIN_ENTRY_CALORIES || calories > MAX_ENTRY_CALORIES) {
+    return { ok: false, error: `calories must be a number between ${MIN_ENTRY_CALORIES} and ${MAX_ENTRY_CALORIES}` };
+  }
+
+  const parseOptionalMacro = (raw, label) => {
+    if (raw === undefined || raw === null || raw === '') return { ok: true, value: null };
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > MAX_ENTRY_MACRO_GRAMS) {
+      return { ok: false, error: `${label} must be a non-negative number of grams if provided` };
+    }
+    return { ok: true, value };
+  };
+
+  const protein = parseOptionalMacro(body?.protein, 'protein');
+  if (!protein.ok) return protein;
+  const fat = parseOptionalMacro(body?.fat, 'fat');
+  if (!fat.ok) return fat;
+  const carbs = parseOptionalMacro(body?.carbs, 'carbs');
+  if (!carbs.ok) return carbs;
+
+  return {
+    ok: true,
+    value: {
+      food_name,
+      calories: Math.round(calories),
+      protein: protein.value,
+      fat: fat.value,
+      carbs: carbs.value,
+    },
+  };
+}
+
+// Creates one entry, always dated "today" (Europe/Kyiv) — there's no way
+// to backdate via this endpoint, matching how weight's week_start is
+// always server-computed rather than client-supplied.
+app.post('/api/food-entries', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const parsed = parseFoodEntryBody(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const entry = await db.createFoodEntry(userId, todayISO(), parsed.value);
+    res.json({ entry });
+  } catch (err) {
+    console.error('[food-entries:post] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося зберегти запис. Спробуйте ще раз.' });
+  }
+});
+
+// Lists entries for one day — defaults to today, but accepts ?date= for
+// completeness (the client's "Історія за сьогодні" only ever asks for
+// today, since the entries themselves also live in that day's local
+// CloudStorage log, which is the client's real source of truth for the UI).
+app.get('/api/food-entries', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const requestedDate = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+    ? req.query.date
+    : todayISO();
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const entries = await db.getFoodEntriesForDate(userId, requestedDate);
+    res.json({ entries });
+  } catch (err) {
+    console.error('[food-entries:get] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося завантажити історію.' });
+  }
+});
+
+app.put('/api/food-entries/:id', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid entry id' });
+  }
+
+  const parsed = parseFoodEntryBody(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    const entry = await db.updateFoodEntry(userId, id, parsed.value);
+    if (!entry) return res.status(404).json({ error: 'Entry not found' });
+    res.json({ entry });
+  } catch (err) {
+    console.error('[food-entries:put] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося оновити запис.' });
+  }
+});
+
+app.delete('/api/food-entries/:id', async (req, res) => {
+  const tgUser = await authenticateAllowedUser(req, res);
+  if (!tgUser) return;
+
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid entry id' });
+  }
+
+  try {
+    const userId = await db.getOrCreateUser({
+      telegram_id: tgUser.id,
+      first_name: tgUser.first_name,
+      username: tgUser.username,
+    });
+    await db.deleteFoodEntry(userId, id);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('[food-entries:delete] failed:', err.message);
+    res.status(502).json({ error: 'Не вдалося видалити запис.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Per-user settings (currently just the custom daily calorie target)
 // ---------------------------------------------------------------------------
 
