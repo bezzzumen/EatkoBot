@@ -406,6 +406,39 @@ async function ensureSchema() {
       UNIQUE(user_id, week_start)
     )
   `);
+
+  // One row per logged food item — this IS a real per-entry log, unlike
+  // daily_status above (which is just a once-a-day rollup snapshot). Backs
+  // the Calculator's optional "Назва страви" feature and the "Історія за
+  // сьогодні" list: every Calculator submission that carries a name gets a
+  // row here, editable/deletable individually. food_name is nullable
+  // (naming is optional — unnamed Calculator entries never reach this
+  // table at all, see app.js), calories is the only column that's always
+  // required, and protein/fat/carbs are nullable since the КБЖУ fields on
+  // that sheet are themselves optional.
+  //
+  // log_date is stored separately from timestamp (rather than derived from
+  // it at query time) for the same reason daily_status.log_date is: it's
+  // always the Europe/Kyiv calendar day, computed server-side via
+  // todayISO() in server.js, so "today's" entries can be selected with a
+  // plain equality check regardless of what timezone the underlying
+  // timestamp's UTC value would otherwise imply.
+  await runTursoQuery('ensureSchema: food_entries', `
+    CREATE TABLE IF NOT EXISTS food_entries (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      food_name   TEXT,
+      calories    INTEGER NOT NULL,
+      protein     REAL,
+      fat         REAL,
+      carbs       REAL,
+      log_date    TEXT NOT NULL,
+      timestamp   TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  await runTursoQuery('ensureSchema: idx_food_entries_user_date', `
+    CREATE INDEX IF NOT EXISTS idx_food_entries_user_date ON food_entries(user_id, log_date)
+  `);
 }
 
 // Adds a column to `users` on deployments whose table predates it. Was
@@ -870,6 +903,95 @@ async function getAllAllowedTelegramIds() {
   return result.rows.map((row) => row.telegram_id);
 }
 
+// ---------------------------------------------------------------------------
+// Named food entries (Calculator "Назва страви" + "Історія за сьогодні")
+// ---------------------------------------------------------------------------
+
+// Shared row -> plain-object mapping, so every function below returns the
+// exact same shape regardless of which query produced the row. Numeric
+// fields come back from Turso as strings/numbers depending on driver
+// version, so these are always coerced explicitly rather than trusted as-is
+// — the nullable macros (protein/fat/carbs) stay `null` rather than
+// becoming `0`, since a genuinely-unset macro and an explicit zero are
+// different things to the client (see the calc-macro-grid fields in app.js,
+// which are optional and simply omitted from the request when blank).
+function mapFoodEntryRow(row) {
+  const num = (v) => (v == null ? null : Number(v));
+  return {
+    id: Number(row.id),
+    food_name: row.food_name ?? null,
+    calories: Number(row.calories),
+    protein: num(row.protein),
+    fat: num(row.fat),
+    carbs: num(row.carbs),
+    log_date: row.log_date,
+    timestamp: row.timestamp,
+  };
+}
+
+// Inserts one row and hands back the full inserted entry (rather than just
+// the new id) so the client can stamp its optimistic local entry with the
+// server-assigned id in one round trip, without a second SELECT.
+async function createFoodEntry(userId, logDate, { food_name, calories, protein, fat, carbs }) {
+  if (!turso) throw new Error('Database not configured');
+  const info = await runTursoQuery(
+    'createFoodEntry',
+    `INSERT INTO food_entries (user_id, food_name, calories, protein, fat, carbs, log_date, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [userId, food_name || null, calories, protein ?? null, fat ?? null, carbs ?? null, logDate]
+  );
+  return getFoodEntryById(userId, Number(info.lastInsertRowid));
+}
+
+// Scoped to userId (not just the row id) on every read/write below — this
+// is what stops one authenticated user from editing or deleting another
+// user's entry by guessing/incrementing an id, the same ownership check
+// upsertWeeklyWeight and friends get implicitly via their user_id-scoped
+// WHERE clauses.
+async function getFoodEntryById(userId, id) {
+  if (!turso) return null;
+  const result = await runTursoQuery(
+    'getFoodEntryById',
+    'SELECT * FROM food_entries WHERE id = ? AND user_id = ?',
+    [id, userId]
+  );
+  return result.rows[0] ? mapFoodEntryRow(result.rows[0]) : null;
+}
+
+// Every entry for one calendar day, oldest first — exactly the order
+// "Історія за сьогодні" wants to render in.
+async function getFoodEntriesForDate(userId, logDate) {
+  if (!turso) return [];
+  const result = await runTursoQuery(
+    'getFoodEntriesForDate',
+    'SELECT * FROM food_entries WHERE user_id = ? AND log_date = ? ORDER BY timestamp ASC, id ASC',
+    [userId, logDate]
+  );
+  return result.rows.map(mapFoodEntryRow);
+}
+
+// Full replace of the editable fields (matches how the edit sheet in
+// app.js works — it always sends the complete current state of the form,
+// never a partial patch). Returns the updated entry, or null if no row
+// matched (wrong id, or it belongs to a different user) so the route can
+// 404 instead of silently reporting success.
+async function updateFoodEntry(userId, id, { food_name, calories, protein, fat, carbs }) {
+  if (!turso) throw new Error('Database not configured');
+  await runTursoQuery(
+    'updateFoodEntry',
+    `UPDATE food_entries
+        SET food_name = ?, calories = ?, protein = ?, fat = ?, carbs = ?
+      WHERE id = ? AND user_id = ?`,
+    [food_name || null, calories, protein ?? null, fat ?? null, carbs ?? null, id, userId]
+  );
+  return getFoodEntryById(userId, id);
+}
+
+async function deleteFoodEntry(userId, id) {
+  if (!turso) throw new Error('Database not configured');
+  await runTursoQuery('deleteFoodEntry', 'DELETE FROM food_entries WHERE id = ? AND user_id = ?', [id, userId]);
+}
+
 module.exports = {
   CATALOG,
   DAILY_CALORIE_TARGET,
@@ -894,4 +1016,9 @@ module.exports = {
   upsertWeeklyWeight,
   getRecentWeeklyWeights,
   getAllAllowedTelegramIds,
+  createFoodEntry,
+  getFoodEntryById,
+  getFoodEntriesForDate,
+  updateFoodEntry,
+  deleteFoodEntry,
 };
