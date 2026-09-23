@@ -288,14 +288,74 @@ const FREEBIE_CATEGORY_KEY = 'freebie';
 const FREEBIE_CUSTOM_KCAL_KEY = '__freebie_custom_kcal';
 const FREEBIE_CUSTOM_MACROS_KEY = '__freebie_custom_macros'; // {protein, fat, carbs} cumulative
 
+// Individual, NAMED Calculator entries — a parallel, per-item record on top
+// of the cumulative FREEBIE_CUSTOM_KCAL_KEY/MACROS counters above, which
+// stay exactly as they were (every entry here still adds into that running
+// total, see openCalculatorSheet). This array is what "Історія за сьогодні"
+// renders and what Edit/Delete operate on; an unnamed Calculator entry
+// never gets pushed here at all — it only touches the cumulative counters,
+// unchanged from before this feature existed. Each element:
+//   { id, serverId, food_name, calories, protein, fat, carbs, timestamp }
+// `id` is a client-generated, stable-for-this-entry string (so Edit/Delete
+// always have something to target instantly, without waiting on a network
+// round trip). `serverId` is the food_entries.id Turso assigns once the
+// background sync in syncCreateFoodEntry() resolves — null until then, and
+// PUT/DELETE to the server are simply skipped (never blocked on) while it
+// is, the same "local is the real source of truth, server is a best-effort
+// mirror" philosophy as syncDailyStatus below.
+const FREEBIE_NAMED_ENTRIES_KEY = '__freebie_named_entries';
+const MAX_FOOD_NAME_LEN_CLIENT = 80; // mirrors MAX_FOOD_NAME_LEN in server.js
+
 // Every reserved (non product-key) slot a day-log object can hold — used
 // wherever code needs to tell "a real catalog product_key" apart from one
 // of these free-form counters.
-const RESERVED_LOG_KEYS = new Set([FREEBIE_CUSTOM_KCAL_KEY, FREEBIE_CUSTOM_MACROS_KEY]);
+const RESERVED_LOG_KEYS = new Set([FREEBIE_CUSTOM_KCAL_KEY, FREEBIE_CUSTOM_MACROS_KEY, FREEBIE_NAMED_ENTRIES_KEY]);
 
 // Reads one of the {protein, fat, carbs} reserved-key objects above,
 // tolerating anything missing/malformed (older saved logs, a corrupted
 // CloudStorage value, etc.) by defaulting every field to 0.
+// Reads the named-entries array (see FREEBIE_NAMED_ENTRIES_KEY above),
+// tolerating anything missing/malformed the same way readMacrosObj does.
+function readNamedEntries(dayLog) {
+  const raw = dayLog ? dayLog[FREEBIE_NAMED_ENTRIES_KEY] : null;
+  return Array.isArray(raw) ? raw : [];
+}
+
+// Client-side id for a new named entry — only needs to be unique within
+// this device's dayLog, never sent anywhere as an identifier the server
+// trusts (the server assigns its OWN id on create; see serverId above).
+function genLocalEntryId() {
+  return `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// HH:MM, Europe/Kyiv, for the "[HH:MM] Назва — Калорії" history rows.
+function formatEntryTime(isoTimestamp) {
+  try {
+    return new Intl.DateTimeFormat('uk-UA', {
+      timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date(isoTimestamp));
+  } catch {
+    return '';
+  }
+}
+
+// Applies a +/- delta to the SAME two cumulative counters every Calculator
+// submission already updates (FREEBIE_CUSTOM_KCAL_KEY/MACROS) — used by
+// edit and delete so a named entry changing/disappearing adjusts the
+// running total by exactly its own contribution, without touching whatever
+// the "Будь-чого" custom-item sheet or AI Fridge have separately added to
+// those same counters. Never left negative (rounding/ordering edge cases),
+// matching every other consumer of these two keys.
+function applyNamedEntryDelta(dayLog, deltaKcal, deltaMacros) {
+  dayLog[FREEBIE_CUSTOM_KCAL_KEY] = Math.max(0, round1((Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0) + deltaKcal));
+  const prevMacros = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
+  dayLog[FREEBIE_CUSTOM_MACROS_KEY] = {
+    protein: Math.max(0, round1(prevMacros.protein + (deltaMacros.protein || 0))),
+    fat: Math.max(0, round1(prevMacros.fat + (deltaMacros.fat || 0))),
+    carbs: Math.max(0, round1(prevMacros.carbs + (deltaMacros.carbs || 0))),
+  };
+}
+
 function readMacrosObj(dayLog, key) {
   const raw = dayLog ? dayLog[key] : null;
   if (!raw || typeof raw !== 'object') return { protein: 0, fat: 0, carbs: 0 };
@@ -910,6 +970,89 @@ async function syncDailyStatus() {
     // The dirty flag stays set, so the next log action or app open (via
     // persistAndSync -> markSyncDirty -> another attempt) retries it.
     console.error('[sync] Background status sync failed (will retry next action/open):', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Named food-entry sync (Calculator "Історія за сьогодні")
+// ---------------------------------------------------------------------------
+// Same fire-and-forget philosophy as syncDailyStatus above: the entries
+// array living inside today's dayLog (FREEBIE_NAMED_ENTRIES_KEY) is the
+// real source of truth for everything the UI shows and edits, instantly
+// and offline-first. These three calls just mirror that to the server's
+// food_entries table (see database.js) in the background, for durability
+// beyond this one device. A failure here is logged and otherwise silent —
+// never a toast, never something that blocks or reverts the local change —
+// and there's no retry queue: since entries are edited individually rather
+// than re-synced as one big blob, a failed create simply leaves that one
+// entry's serverId null forever, which the update/delete helpers below
+// already treat as "nothing to sync remotely for this one" and skip
+// cleanly rather than erroring.
+
+async function syncCreateFoodEntry(localId, payload) {
+  if (!INIT_DATA) return; // outside Telegram — nothing to sync, local entry already stands on its own
+  try {
+    const res = await fetch('/api/food-entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Create failed with status ${res.status}`);
+    }
+    const { entry } = await res.json();
+    if (entry?.id == null) return;
+
+    // Stamp the server-assigned id onto the local entry so a later
+    // edit/delete can target the right server row — but only if that
+    // entry is still there (the user may have already deleted it locally
+    // while this request was in flight).
+    const dayLog = dayLogCache.get(TODAY) || {};
+    const entries = readNamedEntries(dayLog);
+    const local = entries.find((e) => e.id === localId);
+    if (local) {
+      local.serverId = entry.id;
+      setDayLogInMemory(TODAY, dayLog);
+      persistDayLog(TODAY, dayLog).catch((err) => {
+        console.warn('[food-entries] local persist after create-sync failed:', err);
+      });
+    }
+  } catch (err) {
+    console.warn('[food-entries] background create sync failed (this entry stays local-only):', err.message);
+  }
+}
+
+async function syncUpdateFoodEntry(serverId, payload) {
+  if (!INIT_DATA || serverId == null) return;
+  try {
+    const res = await fetch(`/api/food-entries/${serverId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': INIT_DATA },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Update failed with status ${res.status}`);
+    }
+  } catch (err) {
+    console.warn('[food-entries] background update sync failed:', err.message);
+  }
+}
+
+async function syncDeleteFoodEntry(serverId) {
+  if (!INIT_DATA || serverId == null) return;
+  try {
+    const res = await fetch(`/api/food-entries/${serverId}`, {
+      method: 'DELETE',
+      headers: { 'X-Telegram-Init-Data': INIT_DATA },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Delete failed with status ${res.status}`);
+    }
+  } catch (err) {
+    console.warn('[food-entries] background delete sync failed:', err.message);
   }
 }
 
@@ -2370,7 +2513,7 @@ function openCalculatorSheet() {
   sheetTitle.textContent = 'Калькулятор';
   sheetSub.textContent = 'КБЖУ на 100г × вага порції';
 
-  const calcState = { per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
+  const calcState = { foodName: '', per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
 
   function computedTotalKcal() {
     if (!Number.isFinite(calcState.per100) || !Number.isFinite(calcState.grams)) return 0;
@@ -2398,12 +2541,21 @@ function openCalculatorSheet() {
 
     sheetContent.innerHTML = `
       <div class="sheet-scroll">
+        <button class="history-open-btn" id="openHistoryBtn">📋 Історія за сьогодні</button>
+
         ${remaining !== null ? `<div class="remaining-hint">Залишок бюджету «Будь-чого»: <b>${fmtNum(remaining)} ккал</b></div>` : ''}
 
         <div class="calc-result">
           <div class="calc-result-value mono" id="calcResultValue">${fmtNum(round1(total))}</div>
           <div class="calc-result-label">ккал загалом</div>
           ${hasMacros ? `<div class="calc-result-macros" id="calcResultMacros">Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г</div>` : ''}
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Назва страви (необов'язково)</div>
+          <div class="custom-input-row">
+            <input type="text" id="calcNameInput" placeholder="напр. Сирники" maxlength="${MAX_FOOD_NAME_LEN_CLIENT}" value="${escapeHtml(calcState.foodName)}" />
+          </div>
         </div>
 
         <div class="custom-input-wrap">
@@ -2449,6 +2601,16 @@ function openCalculatorSheet() {
   }
 
   function bind() {
+    document.getElementById('openHistoryBtn')?.addEventListener('click', () => {
+      haptic('impact', 'light');
+      openTodaysHistorySheet();
+    });
+
+    const nameInput = document.getElementById('calcNameInput');
+    nameInput?.addEventListener('input', () => {
+      calcState.foodName = nameInput.value;
+    });
+
     const per100Input = document.getElementById('calcPer100Input');
     per100Input?.addEventListener('input', () => {
       const val = parseFloat(per100Input.value);
@@ -2491,6 +2653,7 @@ function openCalculatorSheet() {
       haptic('impact', 'medium');
 
       const macros = computedMacros();
+      const foodName = calcState.foodName.trim().slice(0, MAX_FOOD_NAME_LEN_CLIENT);
 
       // OPTIMISTIC: same pattern as every other log sheet — mutate
       // in-memory state and re-render instantly, then persist in the
@@ -2508,6 +2671,31 @@ function openCalculatorSheet() {
           carbs: round1(prev.carbs + macros.carbs),
         };
       }
+
+      // NAMED entries only: an unnamed Calculator submission behaves
+      // exactly as before (aggregate-only, above), never entering
+      // "Історія за сьогодні" and never creating a food_entries row.
+      // Every submit — named or not — is always a brand-new addition on
+      // top of the running total, never merged into a same-named earlier
+      // one, so re-logging "Сирники" twice in a day makes two separate
+      // timestamped rows here, exactly as it always has for the totals.
+      let newEntry = null;
+      if (foodName) {
+        newEntry = {
+          id: genLocalEntryId(),
+          serverId: null,
+          food_name: foodName,
+          calories: total,
+          protein: macros.protein,
+          fat: macros.fat,
+          carbs: macros.carbs,
+          timestamp: new Date().toISOString(),
+        };
+        const entries = readNamedEntries(dayLog);
+        entries.push(newEntry);
+        dayLog[FREEBIE_NAMED_ENTRIES_KEY] = entries;
+      }
+
       setDayLogInMemory(TODAY, dayLog);
       recomputeAndRender();
 
@@ -2515,6 +2703,18 @@ function openCalculatorSheet() {
       closeSheet();
 
       persistAndSync();
+
+      // BACKGROUND: mirror the named entry to the server's food_entries
+      // table, never blocking the UI above.
+      if (newEntry) {
+        syncCreateFoodEntry(newEntry.id, {
+          food_name: newEntry.food_name,
+          calories: newEntry.calories,
+          protein: newEntry.protein,
+          fat: newEntry.fat,
+          carbs: newEntry.carbs,
+        });
+      }
     });
   }
 
@@ -2552,6 +2752,270 @@ document.getElementById('calcBtn')?.addEventListener('click', () => {
   setActiveNavBtn('calcBtn');
   openCalculatorSheet();
 });
+
+// --- "Історія за сьогодні": chronological list of today's NAMED Calculator
+// entries, with Edit/Delete per row. Reuses the same overlay/sheet as
+// everything else in the app (there's only ever one sheet instance) —
+// opening this just swaps its content, and the back button below swaps it
+// straight back to the Calculator rather than closing the overlay. Because
+// entries live inside today's dayLog specifically (never any other date's),
+// there is nothing extra to filter here — every entry this reads is
+// already, by construction, from today. ---
+
+function openTodaysHistorySheet() {
+  setSheetEmoji(SHEET_ICON_CALCULATOR);
+  sheetTitle.textContent = 'Історія за сьогодні';
+  sheetSub.textContent = 'Названі страви з Калькулятора';
+
+  function render() {
+    const dayLog = dayLogCache.get(TODAY) || {};
+    const entries = readNamedEntries(dayLog)
+      .slice()
+      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+    const listHtml = entries.length
+      ? `<div class="history-list">${entries.map((e) => {
+          const hasMacros = e.protein || e.fat || e.carbs;
+          return `
+            <div class="history-item">
+              <div class="history-item-main">
+                <div class="history-item-time">${formatEntryTime(e.timestamp)}</div>
+                <div class="history-item-name">${escapeHtml(e.food_name || '')}</div>
+                ${hasMacros ? `<div class="history-item-macros">Б ${fmtNum(e.protein)}г · Ж ${fmtNum(e.fat)}г · В ${fmtNum(e.carbs)}г</div>` : ''}
+              </div>
+              <div class="history-item-kcal">${fmtNum(e.calories)}<span> ккал</span></div>
+              <div class="history-item-actions">
+                <button data-edit="${escapeHtml(e.id)}" title="Редагувати" aria-label="Редагувати">✎</button>
+                <button data-delete="${escapeHtml(e.id)}" title="Видалити" aria-label="Видалити">🗑</button>
+              </div>
+            </div>
+          `;
+        }).join('')}</div>`
+      : `<div class="history-empty">Сьогодні ще немає названих страв із Калькулятора.</div>`;
+
+    sheetContent.innerHTML = `
+      <div class="sheet-scroll">
+        <button class="history-back-btn" id="historyBackBtn">← Калькулятор</button>
+        ${listHtml}
+      </div>
+    `;
+
+    bind();
+  }
+
+  function bind() {
+    document.getElementById('historyBackBtn')?.addEventListener('click', () => {
+      haptic('impact', 'light');
+      openCalculatorSheet();
+    });
+
+    sheetContent.querySelectorAll('[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        haptic('impact', 'light');
+        openEditEntrySheet(btn.dataset.edit);
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-delete]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        haptic('notification', 'warning');
+        deleteNamedEntry(btn.dataset.delete);
+        render(); // stay on the history view, just without that row now
+      });
+    });
+  }
+
+  render();
+  openSheet();
+}
+
+// Removes one named entry and unwinds exactly its own contribution from
+// the shared "Будь-чого" running totals (applyNamedEntryDelta), then
+// re-renders the Hero card / category bars / remaining budgets instantly —
+// same optimistic-local-first pattern as every log action in this file.
+function deleteNamedEntry(id) {
+  const dayLog = dayLogCache.get(TODAY) || {};
+  const entries = readNamedEntries(dayLog);
+  const idx = entries.findIndex((e) => e.id === id);
+  if (idx === -1) return;
+
+  const [removed] = entries.splice(idx, 1);
+  dayLog[FREEBIE_NAMED_ENTRIES_KEY] = entries;
+  applyNamedEntryDelta(dayLog, -removed.calories, {
+    protein: -(removed.protein || 0),
+    fat: -(removed.fat || 0),
+    carbs: -(removed.carbs || 0),
+  });
+
+  setDayLogInMemory(TODAY, dayLog);
+  recomputeAndRender();
+  persistAndSync();
+
+  if (removed.serverId != null) syncDeleteFoodEntry(removed.serverId);
+}
+
+// --- Edit sheet for one named entry: pre-filled name/calories/КБЖУ, same
+// overlay again. Saving replaces the entry's fields and applies only the
+// DELTA (old vs. new) to the shared running totals, so it never disturbs
+// whatever the "Будь-чого" custom-item sheet or AI Fridge have separately
+// contributed to those same counters. ---
+
+function openEditEntrySheet(id) {
+  const dayLog = dayLogCache.get(TODAY) || {};
+  const entries = readNamedEntries(dayLog);
+  const entry = entries.find((e) => e.id === id);
+  if (!entry) { openTodaysHistorySheet(); return; }
+
+  setSheetEmoji(SHEET_ICON_CALCULATOR);
+  sheetTitle.textContent = 'Редагувати запис';
+  sheetSub.textContent = formatEntryTime(entry.timestamp);
+
+  const editState = {
+    foodName: entry.food_name || '',
+    calories: entry.calories,
+    protein: entry.protein || 0,
+    fat: entry.fat || 0,
+    carbs: entry.carbs || 0,
+  };
+
+  function render() {
+    sheetContent.innerHTML = `
+      <div class="sheet-scroll">
+        <button class="history-back-btn" id="editBackBtn">← Історія за сьогодні</button>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Назва страви</div>
+          <div class="custom-input-row">
+            <input type="text" id="editNameInput" placeholder="напр. Сирники" maxlength="${MAX_FOOD_NAME_LEN_CLIENT}" value="${escapeHtml(editState.foodName)}" />
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">Калорії (ккал)</div>
+          <div class="custom-input-row">
+            <input type="number" inputmode="decimal" id="editCaloriesInput" value="${editState.calories}" />
+            <div class="unit-label">ккал</div>
+          </div>
+        </div>
+
+        <div class="custom-input-wrap">
+          <div class="custom-input-label">КБЖУ (г, необов'язково)</div>
+          <div class="calc-macro-grid">
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="editProteinInput" placeholder="0" value="${editState.protein || ''}" />
+              <span class="calc-macro-label">Білки</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="editFatInput" placeholder="0" value="${editState.fat || ''}" />
+              <span class="calc-macro-label">Жири</span>
+            </div>
+            <div class="calc-macro-field">
+              <input type="number" inputmode="decimal" id="editCarbsInput" placeholder="0" value="${editState.carbs || ''}" />
+              <span class="calc-macro-label">Вуглев.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sheet-footer">
+        <button class="confirm-btn" id="editSaveBtn">Зберегти зміни</button>
+        <button class="danger-btn" id="editDeleteBtn">Видалити запис</button>
+      </div>
+    `;
+
+    bind();
+  }
+
+  function bind() {
+    document.getElementById('editBackBtn')?.addEventListener('click', () => {
+      haptic('impact', 'light');
+      openTodaysHistorySheet();
+    });
+
+    document.getElementById('editNameInput')?.addEventListener('input', (e) => {
+      editState.foodName = e.target.value;
+    });
+    document.getElementById('editCaloriesInput')?.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      editState.calories = Number.isFinite(val) ? val : 0;
+    });
+    document.getElementById('editProteinInput')?.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      editState.protein = Number.isFinite(val) ? val : 0;
+    });
+    document.getElementById('editFatInput')?.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      editState.fat = Number.isFinite(val) ? val : 0;
+    });
+    document.getElementById('editCarbsInput')?.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      editState.carbs = Number.isFinite(val) ? val : 0;
+    });
+
+    document.getElementById('editSaveBtn')?.addEventListener('click', () => {
+      haptic('impact', 'medium');
+      saveEditedEntry(id, editState);
+    });
+
+    document.getElementById('editDeleteBtn')?.addEventListener('click', () => {
+      haptic('notification', 'warning');
+      deleteNamedEntry(id);
+      openTodaysHistorySheet();
+    });
+  }
+
+  render();
+  openSheet();
+}
+
+// Applies the edit sheet's current field values to the stored entry (full
+// replace, matching what PUT /api/food-entries/:id expects), adjusts the
+// shared running totals by the delta, re-renders everything, and mirrors
+// the change to the server in the background.
+function saveEditedEntry(id, editState) {
+  const dayLog = dayLogCache.get(TODAY) || {};
+  const entries = readNamedEntries(dayLog);
+  const entry = entries.find((e) => e.id === id);
+  if (!entry) { openTodaysHistorySheet(); return; }
+
+  const newCalories = Math.max(0, round1(editState.calories) || 0);
+  const newProtein = Math.max(0, round1(editState.protein) || 0);
+  const newFat = Math.max(0, round1(editState.fat) || 0);
+  const newCarbs = Math.max(0, round1(editState.carbs) || 0);
+  const newName = editState.foodName.trim().slice(0, MAX_FOOD_NAME_LEN_CLIENT) || null;
+
+  const deltaKcal = newCalories - entry.calories;
+  const deltaMacros = {
+    protein: newProtein - (entry.protein || 0),
+    fat: newFat - (entry.fat || 0),
+    carbs: newCarbs - (entry.carbs || 0),
+  };
+
+  entry.food_name = newName;
+  entry.calories = newCalories;
+  entry.protein = newProtein;
+  entry.fat = newFat;
+  entry.carbs = newCarbs;
+
+  dayLog[FREEBIE_NAMED_ENTRIES_KEY] = entries;
+  applyNamedEntryDelta(dayLog, deltaKcal, deltaMacros);
+
+  setDayLogInMemory(TODAY, dayLog);
+  recomputeAndRender();
+  persistAndSync();
+
+  if (entry.serverId != null) {
+    syncUpdateFoodEntry(entry.serverId, {
+      food_name: newName,
+      calories: newCalories,
+      protein: newProtein,
+      fat: newFat,
+      carbs: newCarbs,
+    });
+  }
+
+  haptic('notification', 'success');
+  openTodaysHistorySheet();
+}
 
 // --- "Будь-чого" custom item sheet: a free-form product not in the
 // catalog. Per-100g × portion-weight math (calories, plus optional
