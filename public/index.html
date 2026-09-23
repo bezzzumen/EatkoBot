@@ -592,7 +592,7 @@
   .overlay.show { opacity: 1; pointer-events: auto; }
 
   .sheet {
-    width: 100%; max-height: 86vh;
+    width: 100%; max-height: 85vh; max-height: 85dvh;
     background: var(--tg-secondary-bg);
     -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
     border: 1px solid var(--glass-border); border-bottom: none;
@@ -602,6 +602,13 @@
     transform: translateY(100%);
     transition: transform 0.35s cubic-bezier(.16,1,.3,1);
   }
+  .sheet-header { flex-shrink: 0; }
+  /* #sheetContent (the main, dynamically-rendered Calculator/log/history
+     sheet) wraps its own .sheet-scroll + .sheet-footer, so it needs the
+     same flex-column/min-height:0 treatment as .sheet itself in order for
+     the max-height above to actually be enforced instead of just letting
+     tall content push the footer off-screen. */
+  #sheetContent { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .overlay.show .sheet { transform: translateY(0); animation: sheet-settle 0.35s cubic-bezier(.16,1,.3,1); }
   @keyframes sheet-settle { from { transform: translateY(6%); } to { transform: translateY(0); } }
 
@@ -671,7 +678,12 @@
   }
   .sheet-close:active { transform: scale(0.9); }
 
-  .sheet-scroll { overflow-y: auto; padding: 0 18px; -webkit-overflow-scrolling: touch; }
+  .sheet-scroll {
+    flex: 1; min-height: 0;
+    overflow-y: auto; padding: 0 18px;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
 
   .current-logged {
     display: flex; justify-content: space-between; align-items: center;
@@ -857,7 +869,20 @@
   }
   .custom-summary-row .mono { color: var(--tg-text); font-size: 11.5px; }
 
-  .sheet-footer { padding: 12px 18px 4px; }
+  /* Sits as a flex sibling outside .sheet-scroll (never inside it), so it
+     naturally stays pinned below the scrollable area and is always visible
+     regardless of scroll position — no need for position:sticky. */
+  .sheet-footer {
+    flex-shrink: 0;
+    padding: 12px 18px 4px;
+    background: var(--tg-secondary-bg);
+    position: relative;
+  }
+  .sheet-footer::before {
+    content: ''; position: absolute; left: 0; right: 0; top: -13px; height: 12px;
+    background: linear-gradient(to bottom, transparent, var(--tg-secondary-bg));
+    pointer-events: none;
+  }
   .confirm-btn {
     width: 100%; padding: 15px; border: none; border-radius: 16px;
     background: linear-gradient(135deg, var(--aurora-1), var(--aurora-2)); color: #fff;
@@ -994,7 +1019,7 @@
 
   /* ===== ANALYTICS MODAL ===== */
 
-  .analytics-sheet { height: 85vh; max-height: 85vh; }
+  .analytics-sheet { height: 85vh; max-height: 85vh; height: 85dvh; max-height: 85dvh; }
 
   /* iOS-style segmented control: glass track + a sliding highlight thumb
      (positioned in JS from the active button's own offsetLeft/width, so it
@@ -1211,7 +1236,7 @@
   /* Same rationale as .analytics-sheet — a generated recipe (title,
      description, macro chips, ingredients, steps) can run long, so this
      needs more room than the fixed-content weight/target sheets. */
-  .ai-fridge-sheet { max-height: 88vh; }
+  .ai-fridge-sheet { max-height: 85vh; max-height: 85dvh; }
 
   .ai-fridge-textarea {
     width: 100%; min-height: 84px; padding: 12px 14px; border-radius: 13px;
