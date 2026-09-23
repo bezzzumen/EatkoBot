@@ -43,6 +43,26 @@ function haptic(type, style) {
   else if (type === 'selection') h.selectionChanged();
 }
 
+// --- Background-scroll lock while any bottom-sheet overlay is open. All
+// five overlays (main sheet, Analytics, Weight, Target, AI Fridge) call
+// lockBodyScroll()/unlockBodyScroll() from their own open/close functions.
+// Reference-counted rather than a plain boolean so that if one overlay is
+// ever opened while another hasn't finished closing, the body doesn't get
+// unlocked prematurely. ---
+let openOverlayCount = 0;
+function lockBodyScroll() {
+  openOverlayCount += 1;
+  document.body.style.overflow = 'hidden';
+  document.body.style.touchAction = 'pan-y';
+}
+function unlockBodyScroll() {
+  openOverlayCount = Math.max(0, openOverlayCount - 1);
+  if (openOverlayCount === 0) {
+    document.body.style.overflow = '';
+    document.body.style.touchAction = '';
+  }
+}
+
 function kyivTodayISO() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -1179,10 +1199,12 @@ function openWeightSheet() {
   }
 
   weightOverlay.classList.add('show');
+  lockBodyScroll();
 }
 function closeWeightSheet() {
   weightOverlay.classList.remove('show');
   clearActiveNavBtn();
+  unlockBodyScroll();
 }
 
 function wireUpWeightForm() {
@@ -1393,6 +1415,7 @@ function openTargetSheet() {
   updateTargetPreview();
 
   targetOverlay.classList.add('show');
+  lockBodyScroll();
   // Autofocus + select-all the editable field, so re-entering a value is a
   // single keystroke away.
   const focusEl = targetSheetMode === 'calories' ? els.kcal : els.protein;
@@ -1401,6 +1424,7 @@ function openTargetSheet() {
 
 function closeTargetSheet() {
   targetOverlay.classList.remove('show');
+  unlockBodyScroll();
 }
 
 // Live, read-only preview: the 4/9/4 total and the percentage split the
@@ -1779,7 +1803,12 @@ function renderCategories() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       haptic('impact', 'light');
-      openFreebieCustomSheet();
+      // Opens the exact same fully-featured Calculator sheet as the bottom
+      // tab (openCalculatorSheet) — not the older, narrower
+      // openFreebieCustomSheet — so "Історія за сьогодні" and the food-name
+      // field are always available from here too.
+      setActiveNavBtn('calcBtn');
+      openCalculatorSheet();
     });
   });
 }
@@ -2239,10 +2268,12 @@ function openAnalytics() {
   });
   renderAnalytics();
   analyticsOverlay.classList.add('show');
+  lockBodyScroll();
 }
 function closeAnalytics() {
   analyticsOverlay.classList.remove('show');
   clearActiveNavBtn();
+  unlockBodyScroll();
 }
 
 document.getElementById('analyticsBtn')?.addEventListener('click', () => {
@@ -2294,8 +2325,8 @@ const sheetContent = document.getElementById('sheetContent');
 document.getElementById('sheetClose').addEventListener('click', () => { haptic('impact', 'light'); closeSheet(); });
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSheet(); });
 
-function openSheet() { overlay.classList.add('show'); }
-function closeSheet() { overlay.classList.remove('show'); clearActiveNavBtn(); }
+function openSheet() { overlay.classList.add('show'); lockBodyScroll(); }
+function closeSheet() { overlay.classList.remove('show'); clearActiveNavBtn(); unlockBodyScroll(); }
 
 // Sets the small icon slot in the sheet header. `categoryKey` present ->
 // renders that category's own colored SVG badge (same artwork/palette as
@@ -3237,10 +3268,12 @@ function openAiFridgeSheet() {
   aiFridgeState.recipe = null;
   renderAiFridge();
   aiFridgeOverlay.classList.add('show');
+  lockBodyScroll();
 }
 function closeAiFridgeSheet() {
   aiFridgeOverlay.classList.remove('show');
   clearActiveNavBtn();
+  unlockBodyScroll();
 }
 
 // Today's remaining calories/macros = today's (possibly custom-scaled, see
