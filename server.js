@@ -563,6 +563,25 @@ function parseAiFridgeRecipe(rawText) {
 
 const CATEGORY_STATUS_ICON = { over: '⚠️', complete: '✅', active: '🔸' };
 
+// The app's current, active categories — anything else found in a
+// `categories` array (most notably the legacy "Погане їдло", whose budget
+// and logging were merged into "Будь-чого" and which was fully removed
+// from the app's category list) is stale data and must be filtered out
+// before the summary is built. This also protects against old stored
+// daily_status rows from before that migration, which may still contain
+// a "Погане їдло" entry (typically with no target_calories and 0 ккал
+// consumed), so it never shows up as a stray line again.
+const ACTIVE_CATEGORY_NAMES = new Set([
+  'Гарнір',
+  'Молочні продукти',
+  'Будь-чого',
+  "М'ясо / Риба / Яйця",
+  'Овочі та гриби',
+  'Жири та соуси',
+  'Фрукти та ягоди',
+  'Горіхи та насіння',
+]);
+
 function buildSummaryMessage({ total_calories, daily_calorie_target, streak, categories, fortuneLine }) {
   const pct = daily_calorie_target ? Math.round((total_calories / daily_calorie_target) * 100) : 0;
 
@@ -574,12 +593,19 @@ function buildSummaryMessage({ total_calories, daily_calorie_target, streak, cat
     '',
   ];
 
-  for (const c of categories) {
+  // Drop anything that isn't a current active category (legacy "Погане
+  // їдло" entries included) before rendering, rather than trying to
+  // special-case it by name inside the loop below.
+  const activeCategories = (categories || []).filter(
+    (c) => c && ACTIVE_CATEGORY_NAMES.has(c.category_name)
+  );
+
+  for (const c of activeCategories) {
     const icon = CATEGORY_STATUS_ICON[c.status] || '🔸';
     const label = `${icon} ${escapeHtml(c.emoji || '')} <b>${escapeHtml(c.category_name || '')}</b>`;
-    // Categories with no target_calories (e.g. "Погане їдло" — a direct
-    // kcal entry, uncapped by design) have no meaningful usage percent, so
-    // just show the kcal figure instead of a "X% (Y ккал)" pair.
+    // Categories with no target_calories (a direct kcal entry, uncapped by
+    // design) have no meaningful usage percent, so just show the kcal
+    // figure instead of a "X% (Y ккал)" pair.
     lines.push(
       c.target_calories
         ? `${label} — ${Math.round(c.usage_percent ?? 0)}% (${Math.round(c.calories_consumed ?? 0)} ккал)`
