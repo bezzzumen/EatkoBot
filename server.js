@@ -25,7 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const cron = require('node-cron');
-const { Bot, InlineKeyboard } = require('grammy');
+const { Bot, InlineKeyboard, GrammyError } = require('grammy');
 
 const db = require('./database');
 const { CATALOG } = db;
@@ -1402,19 +1402,85 @@ bot.catch((err) => {
 // Render zero-downtime redeploys: for a brief window, the old container and
 // the new one can both be polling at once. Telegram only allows one
 // long-poll connection per bot token, so the second one to connect gets
-// rejected with a 409. Clearing any pending getUpdates session (and
-// dropping whatever updates piled up while nothing was listening) before
-// starting a fresh poll avoids fighting over that single connection slot.
-async function stopBot() {
+// rejected with a 409. This used to be fatal — an uncaught rejection here
+// took the whole Node process down, Express API and all, over what's
+// really just a few seconds of overlap during a routine deploy.
+// startBotWithRetry() below catches that specific error and waits for the
+// old instance to finish closing out (see handleShutdown further down —
+// that's what actually frees up the polling slot) instead of crashing.
+const BOT_START_RETRY_DELAY_MS = 3000;
+
+// Set by handleShutdown() so a retry that's already scheduled via
+// setTimeout doesn't fire again once THIS instance has itself been asked
+// to shut down (e.g. it's the one being redeployed away this time).
+let botShuttingDown = false;
+let botRetryTimer = null;
+
+async function startBotWithRetry() {
+  if (botShuttingDown) return;
+
   try {
-    await bot.stop();
-    console.log('Telegram bot stopped gracefully');
+    // bot.start() resolves only once bot.stop() is called — it IS the
+    // long-poll loop, not a one-off request — so this await normally
+    // never returns while polling is healthy. It only rejects (or
+    // returns early) if something goes wrong getting that loop started
+    // in the first place, which is exactly what the catch below handles.
+    // onStart fires once the very first getUpdates call actually
+    // succeeds, which is the accurate place to log success — unlike a
+    // log line placed right after a fire-and-forget bot.start() call,
+    // which would fire immediately regardless of whether polling ever
+    // actually started.
+    await bot.start({
+      onStart: () => console.log('✅ Telegram bot is polling for updates'),
+    });
   } catch (err) {
-    console.error('Error stopping bot:', err);
+    if (botShuttingDown) return; // already shutting down — nothing to retry for
+
+    const is409 = err instanceof GrammyError && err.error_code === 409;
+
+    if (is409) {
+      console.warn('[bot] 409 Conflict detected (previous instance closing), retrying in 3 seconds...');
+    } else {
+      // Anything else unexpected (a network blip, Telegram briefly
+      // unreachable) also retries with the same backoff rather than
+      // crashing the process — same reasoning as the 409 case, just a
+      // different root cause.
+      console.error('[bot] Failed to start polling, retrying in 3 seconds:', err?.message || err);
+    }
+
+    botRetryTimer = setTimeout(() => {
+      botRetryTimer = null;
+      startBotWithRetry();
+    }, BOT_START_RETRY_DELAY_MS);
   }
 }
-process.once('SIGINT', () => stopBot());
-process.once('SIGTERM', () => stopBot());
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+// Render sends SIGTERM to the old container during a zero-downtime deploy
+// (SIGINT covers a local Ctrl+C). Closing the long-poll connection here —
+// rather than just letting the process die — is what lets the NEW
+// instance's own startBotWithRetry() above succeed quickly instead of
+// sitting through repeated 409s until Telegram's session eventually times
+// out on its own.
+const handleShutdown = async () => {
+  console.log('[bot] Stopping bot instance gracefully...');
+  botShuttingDown = true;
+  if (botRetryTimer) {
+    clearTimeout(botRetryTimer);
+    botRetryTimer = null;
+  }
+  try {
+    await bot.stop();
+  } catch (e) {
+    // Ignore if already stopped
+  }
+  process.exit(0);
+};
+
+process.once('SIGTERM', handleShutdown);
+process.once('SIGINT', handleShutdown);
 
 db.ensureSchema()
   .then(async () => {
@@ -1423,8 +1489,7 @@ db.ensureSchema()
     });
 
     await bot.api.deleteWebhook({ drop_pending_updates: true });
-    bot.start();
-    console.log('✅ Telegram bot is polling for updates');
+    startBotWithRetry(); // fire-and-forget — logs its own success (onStart) or retries on failure, never blocks boot
 
     // Every Monday at 09:00, Europe/Kyiv. NOTE: like the evening broadcast
     // above, this only fires if the process is actually awake at that
