@@ -104,8 +104,7 @@
      can silently darken the background or lighten the text again. */
   input[type="password"],
   input[type="number"],
-  input[type="text"].lock-input,
-  .pin-input {
+  input[type="text"].lock-input {
     color: #0F172A !important;
     background-color: #FFFFFF !important;
     border: 1px solid #CBD5E1 !important;
@@ -115,14 +114,12 @@
   }
   input[type="password"]:focus,
   input[type="number"]:focus,
-  input[type="text"].lock-input:focus,
-  .pin-input:focus {
+  input[type="text"].lock-input:focus {
     border-color: var(--aurora-1) !important;
   }
   input[type="password"]::placeholder,
   input[type="number"]::placeholder,
-  input[type="text"].lock-input::placeholder,
-  .pin-input::placeholder {
+  input[type="text"].lock-input::placeholder {
     color: #64748B !important;
     opacity: 1;
   }
@@ -150,6 +147,19 @@
     padding-bottom: calc(110px + env(safe-area-inset-bottom));
     overscroll-behavior-y: contain;
     position: relative;
+  }
+  /* Toggled on <body> (see lockBodyScroll()/unlockBodyScroll() in app.js)
+     while any bottom-sheet overlay is open, so a drag that starts on the
+     dark backdrop — outside the sheet's own scrollable .sheet-scroll —
+     can't leak through and scroll the category list behind it.
+     touch-action: none (not pan-y — pan-y explicitly permits vertical
+     panning, which is the opposite of what a scroll lock needs) only
+     applies to body itself; .sheet-scroll and other descendants keep
+     their own default touch-action, so scrolling inside an open sheet is
+     unaffected. */
+  body.scroll-locked {
+    overflow: hidden;
+    touch-action: none;
   }
   .mono { font-family: 'Plus Jakarta Sans', sans-serif !important; font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: -0.01em; }
 
@@ -601,6 +611,14 @@
     display: flex; flex-direction: column;
     transform: translateY(100%);
     transition: transform 0.35s cubic-bezier(.16,1,.3,1);
+    /* Belt-and-suspenders alongside #sheetContent/.sheet-scroll's own
+       flex:1;min-height:0 containment below: if content ever exceeds
+       max-height (e.g. a very long Calculator/AI Fridge result on a short
+       viewport), the sheet itself can still scroll to reach the footer
+       button instead of silently overflowing past the viewport with no
+       way to reach it. */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .sheet-header { flex-shrink: 0; }
   /* #sheetContent (the main, dynamically-rendered Calculator/log/history
@@ -632,42 +650,40 @@
   .sheet-header .sub { color: var(--tg-hint); font-size: 12px; margin-top: 2px; font-weight: 500; }
 
   /* ===== HIGH-CONTRAST TEXT FIX — inside every bottom sheet =====
-     Hardcoded on top of the (now also-fixed) --tg-text/--tg-hint tokens,
-     scoped to .sheet/.modal/.popup specifically (every sheet in this app
-     lives inside .overlay > .sheet, so .sheet already covers all of
-     them), so nothing in a modal can ever again inherit a stray
+     Hardcoded on top of the (now also-fixed) --tg-text/--tg-hint tokens.
+     Every modal in this app lives inside .overlay > .sheet (there's no
+     .modal/.popup element anywhere), so scoping to .sheet alone covers
+     all of them — nothing in a sheet can ever again inherit a stray
      dark-themed or Telegram-theme color instead of this app's own light
      design. */
-  .sheet h2, .modal h2, .popup h2,
-  .sheet .sheet-header h2, .modal .sheet-header h2, .popup .sheet-header h2 {
+  .sheet h2,
+  .sheet .sheet-header h2 {
     color: #0F172A !important;
   }
-  .sheet .sheet-header .sub, .modal .sheet-header .sub, .popup .sheet-header .sub,
-  .sheet .section-title, .modal .section-title, .popup .section-title,
-  .sheet .recipe-section-label, .modal .recipe-section-label, .popup .recipe-section-label {
+  .sheet .sheet-header .sub,
+  .sheet .section-title,
+  .sheet .recipe-section-label {
     color: #334155 !important;
     font-weight: 700;
   }
-  .sheet .category-row .category-name,
-  .modal .category-row .category-name,
-  .popup .category-row .category-name {
+  .sheet .category-row .category-name {
     color: #0F172A !important;
     font-weight: 600;
   }
-  .sheet .macro-val, .modal .macro-val, .popup .macro-val,
-  .sheet .day-detail-kcal, .modal .day-detail-kcal, .popup .day-detail-kcal {
+  .sheet .macro-val,
+  .sheet .day-detail-kcal {
     color: #1E293B !important;
   }
   /* .day-detail-kcal.over needs to stay red (semantic "over budget" state)
      — same specificity as the rule above, so it needs its own !important
      to win back the color rather than being swallowed by it. */
-  .sheet .day-detail-kcal.over, .modal .day-detail-kcal.over, .popup .day-detail-kcal.over {
+  .sheet .day-detail-kcal.over {
     color: var(--danger) !important;
   }
-  .sheet .recipe-title, .modal .recipe-title, .popup .recipe-title,
-  .sheet .recipe-description, .modal .recipe-description, .popup .recipe-description,
-  .sheet .recipe-ingredients li, .modal .recipe-ingredients li, .popup .recipe-ingredients li,
-  .sheet .recipe-steps li, .modal .recipe-steps li, .popup .recipe-steps li {
+  .sheet .recipe-title,
+  .sheet .recipe-description,
+  .sheet .recipe-ingredients li,
+  .sheet .recipe-steps li {
     color: #0F172A !important;
     line-height: 1.5;
   }
