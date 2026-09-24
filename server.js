@@ -1,24 +1,19 @@
 // server.js
 // Express server: serves the WebApp frontend, exposes the static product
-// catalog, runs the Telegram bot, and (new) triggers an AI-written evening
-// summary message on demand.
+// catalog, runs the Telegram bot, and triggers AI-written evening-summary
+// and Monday weight-reminder broadcasts (see /api/trigger-evening-summary
+// and /api/trigger-weight-reminder below).
 //
-// There is still no per-user server-side state for daily logs — those live
-// in the browser via Telegram CloudStorage (localStorage as a fallback),
-// computed client-side from the catalog this server hands out once on load.
-// See public/app.js for that logic, and database.js for why the catalog
-// itself no longer needs a database.
+// There is no per-user server-side state for daily logs — those live in the
+// browser via Telegram CloudStorage (localStorage as a fallback), computed
+// client-side from the catalog this server hands out once on load. See
+// public/app.js for that logic, and database.js for why the catalog itself
+// doesn't need a database.
 //
-// IMPORTANT — this endpoint did not exist before this change. The old
-// cron-based evening summary was removed when logs moved to CloudStorage,
-// because the server had no way to read a user's data anymore. This new
-// /api/trigger-evening-summary endpoint solves that differently: the CLIENT
-// (which already has the day's computed status) calls this endpoint and
-// sends that status along; the server never reads storage itself, it just
-// turns what it's given into an AI-written message and sends it via the bot.
-// Nothing calls this endpoint automatically yet — wiring up public/app.js to
-// call it (e.g. once per day, after some local evening-time check) is a
-// separate, not-yet-done step.
+// The evening-summary flow: the CLIENT (which already has the day's
+// computed status) calls POST /api/sync-status after every log action; the
+// server never reads CloudStorage itself, it just stores that status and,
+// once a day, turns it into an AI-written message sent via the bot.
 
 require('dotenv').config();
 const path = require('path');
@@ -624,6 +619,12 @@ function buildSummaryMessage({ total_calories, daily_calorie_target, streak, cat
 
 const app = express();
 app.use(express.json());
+
+// Holds the http.Server returned by app.listen() once boot finishes below,
+// so handleShutdown() can close it gracefully (stop accepting new
+// connections, let in-flight requests finish) instead of only killing the
+// bot and hard-exiting.
+let httpServer = null;
 
 // --- Keep-alive ping endpoints (registered first, before any other route
 // including static file serving) ---
@@ -1238,14 +1239,9 @@ app.get('/api/trigger-evening-summary', async (req, res) => {
   const date = todayISO();
 
   // Fallback to an empty list rather than failing the whole request: a
-  // transient/misconfigured statuses lookup (e.g. the 404 seen in Render's
-  // logs) should mean "nobody got a summary this run", not "the endpoint is
-  // down". NOTE: the "HTTP error! status: 404" that shows up here is thrown
-  // inside db.getAllStatusForDate() itself (in database.js, not this file)
-  // — that function is fetching a URL/route that no longer exists. This
-  // try/catch stops it from taking the endpoint down, but the fetch call
-  // inside getAllStatusForDate still needs its URL corrected at the source
-  // to actually send anyone their summary again.
+  // transient statuses lookup failure (e.g. a Turso cold-start 404 that
+  // outlasts runTursoQuery's own retries) should mean "nobody got a
+  // summary this run", not "the endpoint is down".
   let users = [];
   try {
     users = await db.getAllStatusForDate(date);
@@ -1490,27 +1486,62 @@ async function startBotWithRetry() {
 // instance's own startBotWithRetry() above succeed quickly instead of
 // sitting through repeated 409s until Telegram's session eventually times
 // out on its own.
-const handleShutdown = async () => {
-  console.log('[bot] Stopping bot instance gracefully...');
+// Hard ceiling on the whole shutdown sequence below: if bot.stop() or the
+// HTTP server's close() ever hangs (a stuck request, a network edge case),
+// Render/the OS will eventually SIGKILL anyway, but that's much slower and
+// noisier than just forcing our own exit once we've given cleanup a fair
+// chance to finish.
+const SHUTDOWN_TIMEOUT_MS = 5000;
+
+const handleShutdown = async (signal) => {
+  console.log(`[shutdown] ${signal} received — stopping gracefully...`);
   botShuttingDown = true;
   if (botRetryTimer) {
     clearTimeout(botRetryTimer);
     botRetryTimer = null;
   }
+
+  const forceExit = setTimeout(() => {
+    console.warn('[shutdown] Cleanup did not finish in time, forcing exit.');
+    process.exit(0);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forceExit.unref(); // never keeps the process alive on its own
+
   try {
     await bot.stop();
-  } catch (e) {
-    // Ignore if already stopped
+  } catch (err) {
+    // Ignore if already stopped.
   }
+
+  if (httpServer) {
+    await new Promise((resolve) => httpServer.close(() => resolve()));
+  }
+
+  clearTimeout(forceExit);
   process.exit(0);
 };
 
-process.once('SIGTERM', handleShutdown);
-process.once('SIGINT', handleShutdown);
+process.once('SIGTERM', () => handleShutdown('SIGTERM'));
+process.once('SIGINT', () => handleShutdown('SIGINT'));
+
+// Safety net: an uncaught error anywhere (a bad Gemini response shape we
+// didn't guard, a rejected promise nobody attached a .catch to, etc.)
+// should not silently kill the whole bot + API with no trace of why. Log
+// it clearly, then shut down the same clean way SIGTERM does rather than
+// leaving the process in a possibly-corrupt state — Render will restart
+// the container automatically either way, so favor a clean, logged exit
+// over an ambiguous one.
+process.on('unhandledRejection', (reason) => {
+  console.error('[!] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[!] Uncaught exception:', err);
+  handleShutdown('uncaughtException').catch(() => process.exit(1));
+});
 
 db.ensureSchema()
   .then(async () => {
-    app.listen(PORT, () => {
+    httpServer = app.listen(PORT, () => {
       console.log(`✅ Server listening on http://localhost:${PORT}`);
     });
 
