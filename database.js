@@ -151,10 +151,21 @@ function recreateTursoClient() {
 }
 
 const TURSO_RETRY_MAX_ATTEMPTS = 3; // 1 initial attempt + 2 retries
-const TURSO_RETRY_DELAY_MS = 1500;
+// Exponential backoff: attempt 1 waits BASE_MS, attempt 2 waits BASE_MS*2,
+// etc. (capped at MAX_MS), each with up to +30% random jitter so that if
+// several requests fail at once (e.g. right after a cold-start 404), their
+// retries don't all land on Turso in the same instant.
+const TURSO_RETRY_BASE_DELAY_MS = 750;
+const TURSO_RETRY_MAX_DELAY_MS = 6000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function backoffDelay(attempt) {
+  const exp = Math.min(TURSO_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), TURSO_RETRY_MAX_DELAY_MS);
+  const jitter = exp * 0.3 * Math.random();
+  return Math.round(exp + jitter);
 }
 
 // Flattens an error into one searchable string: its own message plus every
@@ -281,8 +292,9 @@ async function runTursoQuery(context, sql, args) {
         throw err;
       }
 
-      console.warn(`[turso] "${context}" — retrying in ${TURSO_RETRY_DELAY_MS}ms (likely a cold-start 404)...`);
-      await sleep(TURSO_RETRY_DELAY_MS);
+      const delay = backoffDelay(attempt);
+      console.warn(`[turso] "${context}" — retrying in ${delay}ms (likely a cold-start 404)...`);
+      await sleep(delay);
       recreateTursoClient();
     }
   }
@@ -308,32 +320,30 @@ async function ensureSchema() {
     )
   `);
 
-  // Existing deployments created `users` before daily_target existed, so
-  // CREATE TABLE IF NOT EXISTS above is a no-op for them and never adds the
-  // column. This backfills it on those installs. On a fresh install (or a
-  // redeploy of an install that already has the column) the column already
-  // exists from the CREATE TABLE above, so this always fails there —
-  // expected, and safely ignored below rather than left to crash
-  // ensureSchema (and therefore boot).
+  // Existing deployments created `users` before these columns existed, so
+  // CREATE TABLE IF NOT EXISTS above is a no-op for them and never adds
+  // them. This backfills any that are missing on those installs.
   //
-  // See ensureUsersColumn() below for how the "column already
-  // exists" case is detected and ignored. Any OTHER error still throws,
-  // since that would mean something genuinely unexpected went wrong (e.g.
-  // a real connectivity or permissions problem) and ensureSchema should
-  // not silently continue past that.
-  await ensureUsersColumn('daily_target', `INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`);
-
-  // Custom macro targets, in grams. Deliberately NULLABLE with no default,
-  // unlike daily_target above: NULL is a meaningful state here — "this user
-  // has never set custom macros, so derive them by scaling the base catalog"
-  // (see scaleCatalog() in app.js). A default would erase that distinction.
+  // daily_target: NOT NULL with a default, since every user needs a
+  // calorie target. target_protein/fat/carbs: deliberately NULLABLE with
+  // no default — NULL is a meaningful state here ("this user has never set
+  // custom macros, so derive them by scaling the base catalog", see
+  // scaleCatalog() in app.js), and it's also the only shape SQLite's ALTER
+  // TABLE ADD COLUMN accepts cleanly on a table that already has rows (NOT
+  // NULL without a default is rejected outright).
   //
-  // It also happens to be the only shape SQLite's ALTER TABLE ADD COLUMN
-  // accepts cleanly on a table that already has rows: NOT NULL without a
-  // default is rejected outright.
-  await ensureUsersColumn('target_protein', 'INTEGER');
-  await ensureUsersColumn('target_fat', 'INTEGER');
-  await ensureUsersColumn('target_carbs', 'INTEGER');
+  // ensureUsersColumns() below checks all four against a SINGLE
+  // PRAGMA table_info(users) call rather than one per column, and only
+  // touches Turso again (ALTER, plus a log line) for whichever are
+  // actually missing — so a fully-migrated install (the steady-state case
+  // on every redeploy) does one extra query on boot instead of four, and
+  // stays silent instead of logging "already present" four times.
+  await ensureUsersColumns([
+    ['daily_target', `INTEGER NOT NULL DEFAULT ${DAILY_CALORIE_TARGET}`],
+    ['target_protein', 'INTEGER'],
+    ['target_fat', 'INTEGER'],
+    ['target_carbs', 'INTEGER'],
+  ]);
 
   // One row per (user, date) — a snapshot of that day's totals, upserted
   // every time the client syncs. Only the latest snapshot per day is kept.
@@ -441,63 +451,55 @@ async function ensureSchema() {
   `);
 }
 
-// Adds a column to `users` on deployments whose table predates it. Was
-// ensureUsersDailyTargetColumn(); generalized to any column so the three
-// macro-target columns get the exact same crash-proofing that daily_target
-// needed, rather than three hand-copied variants that can drift apart.
+// Adds any missing columns to `users` on deployments whose table predates
+// them, in ONE PRAGMA table_info(users) round trip rather than one per
+// candidate column — the steady-state case (every redeploy of an
+// already-migrated install) then does a single extra query on boot and
+// logs nothing, instead of four checks and four "already present" lines.
+//
+// `columns` is an array of [columnName, columnDdl] pairs, e.g.
+// ['daily_target', 'INTEGER NOT NULL DEFAULT 2220'].
 //
 // Two layers, because this is on the boot path and a false throw here means
 // the whole service 503s:
 //
-//   1. PRAGMA table_info(users) — if the column is already there, the
-//      ALTER is never attempted, so the common case (every redeploy of an
-//      already-migrated install) produces no error at all. If the PRAGMA
-//      itself fails for any reason, we fall through to the ALTER rather
-//      than treating that as fatal.
-//   2. The ALTER's catch inspects the FULL error (message + the whole
+//   1. PRAGMA table_info(users) — columns already present are skipped
+//      entirely. If the PRAGMA itself fails for any reason, every column
+//      falls through to the ALTER attempt below rather than treating that
+//      as fatal.
+//   2. Each ALTER's catch inspects the FULL error (message + the whole
 //      `cause` chain, via collectErrorText) rather than err.message alone.
 //      @tursodatabase/serverless surfaces the actual
 //      "SQLite error: duplicate column name: daily_target" on err.cause,
-//      so the old err.message-only check never matched and rethrew — which
-//      is what crashed startup in production.
-//
-// `columnDdl` is everything after the column name in the ALTER, e.g.
-// "INTEGER" or "INTEGER NOT NULL DEFAULT 2220".
-async function ensureUsersColumn(columnName, columnDdl) {
+//      so an err.message-only check would never match and would rethrow —
+//      which is what crashed startup in production before this existed.
+async function ensureUsersColumns(columns) {
+  let existing = null;
   try {
-    const info = await runTursoQuery(
-      `ensureSchema: users.${columnName} pragma check`,
-      'PRAGMA table_info(users)'
-    );
-    const hasColumn = (info?.rows || []).some((row) => {
-      // PRAGMA rows come back keyed by name on this driver, but fall back
-      // to positional access (index 1 is `name`) just in case.
-      const name = row?.name ?? row?.[1];
-      return String(name).toLowerCase() === columnName.toLowerCase();
-    });
-    if (hasColumn) {
-      console.log(`[ensureSchema] Column users.${columnName} already present, skipping migration`);
-      return;
-    }
+    const info = await runTursoQuery('ensureSchema: users pragma check', 'PRAGMA table_info(users)');
+    // PRAGMA rows come back keyed by name on this driver, but fall back to
+    // positional access (index 1 is `name`) just in case.
+    existing = new Set((info?.rows || []).map((row) => String(row?.name ?? row?.[1]).toLowerCase()));
   } catch (err) {
-    console.warn(
-      `[ensureSchema] PRAGMA table_info(users) check failed, falling back to ALTER: ${err?.message}`
-    );
+    console.warn(`[ensureSchema] PRAGMA table_info(users) check failed, falling back to ALTER for all columns: ${err?.message}`);
   }
 
-  try {
-    await runTursoQuery(
-      `ensureSchema: users.${columnName} migration`,
-      `ALTER TABLE users ADD COLUMN ${columnName} ${columnDdl}`
-    );
-    console.log(`[ensureSchema] Added users.${columnName} column`);
-  } catch (err) {
-    const fullError = collectErrorText(err);
+  for (const [columnName, columnDdl] of columns) {
+    if (existing && existing.has(columnName.toLowerCase())) continue;
 
-    if (/duplicate column/i.test(fullError) || /already exists/i.test(fullError)) {
-      console.log(`[ensureSchema] Column users.${columnName} already exists, skipping migration`);
-    } else {
-      throw err;
+    try {
+      await runTursoQuery(
+        `ensureSchema: users.${columnName} migration`,
+        `ALTER TABLE users ADD COLUMN ${columnName} ${columnDdl}`
+      );
+      console.log(`[ensureSchema] Added users.${columnName} column`);
+    } catch (err) {
+      const fullError = collectErrorText(err);
+      if (!/duplicate column/i.test(fullError) && !/already exists/i.test(fullError)) {
+        throw err;
+      }
+      // Already exists (e.g. the PRAGMA check above failed open and this
+      // install actually already had it) — nothing to do.
     }
   }
 }
@@ -533,6 +535,8 @@ async function getOrCreateUser({ telegram_id, first_name, username }) {
 // (DAILY_CALORIE_TARGET, 2220) if they've never set one — covers both a
 // NULL/missing column value on rows created before daily_target existed
 // and simply not having called POST /api/user/settings yet.
+// Internal only (not exported) — used as getUserTargets()'s calories-only
+// fallback below when the macro-column SELECT fails.
 async function getUserDailyTarget(userId) {
   if (!turso) return DAILY_CALORIE_TARGET;
 
@@ -543,17 +547,6 @@ async function getUserDailyTarget(userId) {
   );
   const value = result.rows[0]?.daily_target;
   return value == null ? DAILY_CALORIE_TARGET : Number(value);
-}
-
-// Updates this user's daily_target. Range/type validation happens in
-// server.js at the HTTP layer — this just persists whatever it's given.
-async function updateUserDailyTarget(userId, dailyTarget) {
-  if (!turso) throw new Error('Database not configured');
-  await runTursoQuery(
-    'updateUserDailyTarget',
-    'UPDATE users SET daily_target = ? WHERE id = ?',
-    [dailyTarget, userId]
-  );
 }
 
 // The full target set: calories plus the three custom macro grams.
@@ -1001,8 +994,6 @@ module.exports = {
   isDatabaseConfigured,
   ensureSchema,
   getOrCreateUser,
-  getUserDailyTarget,
-  updateUserDailyTarget,
   getUserTargets,
   updateUserTargets,
   upsertDailyStatus,
