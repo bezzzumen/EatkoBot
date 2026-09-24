@@ -48,18 +48,18 @@ function haptic(type, style) {
 // lockBodyScroll()/unlockBodyScroll() from their own open/close functions.
 // Reference-counted rather than a plain boolean so that if one overlay is
 // ever opened while another hasn't finished closing, the body doesn't get
-// unlocked prematurely. ---
+// unlocked prematurely. Toggles the .scroll-locked class (defined in
+// index.html) rather than setting inline styles directly, so the actual
+// lock behavior (overflow + touch-action) lives in one place in CSS. ---
 let openOverlayCount = 0;
 function lockBodyScroll() {
   openOverlayCount += 1;
-  document.body.style.overflow = 'hidden';
-  document.body.style.touchAction = 'pan-y';
+  document.body.classList.add('scroll-locked');
 }
 function unlockBodyScroll() {
   openOverlayCount = Math.max(0, openOverlayCount - 1);
   if (openOverlayCount === 0) {
-    document.body.style.overflow = '';
-    document.body.style.touchAction = '';
+    document.body.classList.remove('scroll-locked');
   }
 }
 
@@ -108,14 +108,6 @@ async function storageGetItem(key) {
     catch (err) { console.warn('CloudStorage.getItem failed, switching to localStorage:', err); usingLocalFallback = true; }
   }
   return localStorage.getItem(key);
-}
-
-async function storageRemoveItem(key) {
-  if (!usingLocalFallback) {
-    try { await cloudCall('removeItem', [key]); return; }
-    catch (err) { console.warn('CloudStorage.removeItem failed, switching to localStorage:', err); usingLocalFallback = true; }
-  }
-  localStorage.removeItem(key);
 }
 
 async function storageGetKeys() {
@@ -3047,198 +3039,6 @@ function saveEditedEntry(id, editState) {
   haptic('notification', 'success');
   openTodaysHistorySheet();
 }
-
-// --- "Будь-чого" custom item sheet: a free-form product not in the
-// catalog. Per-100g × portion-weight math (calories, plus optional
-// protein/fat/carbs), scoped to the "Будь-чого" category's own budget
-// (FREEBIE_CUSTOM_KCAL_KEY / FREEBIE_CUSTOM_MACROS_KEY) — every quick/custom
-// entry in the app (this sheet, the Калькулятор above, AI Fridge recipes)
-// logs through these same two keys, so it counts toward that category's
-// progress bar as well as the top macro bars and Statistics — see
-// computeDayStatus/computeDayMacros. ---
-
-function openFreebieCustomSheet() {
-  const freebieCat = STATE?.categories.find((c) => c.category_key === FREEBIE_CATEGORY_KEY);
-
-  setSheetEmoji(FREEBIE_CATEGORY_KEY, true);
-  sheetTitle.textContent = 'Будь-чого — власний продукт';
-  sheetSub.textContent = 'КБЖУ на 100г × вага порції';
-
-  const calcState = { per100: null, grams: null, protein100: null, fat100: null, carbs100: null };
-
-  function computedTotalKcal() {
-    if (!Number.isFinite(calcState.per100) || !Number.isFinite(calcState.grams)) return 0;
-    return Math.max(0, (calcState.per100 * calcState.grams) / 100);
-  }
-
-  function computedMacros() {
-    if (!Number.isFinite(calcState.grams) || calcState.grams <= 0) return { protein: 0, fat: 0, carbs: 0 };
-    const g = calcState.grams;
-    const p = Number.isFinite(calcState.protein100) ? calcState.protein100 : 0;
-    const f = Number.isFinite(calcState.fat100) ? calcState.fat100 : 0;
-    const c = Number.isFinite(calcState.carbs100) ? calcState.carbs100 : 0;
-    return {
-      protein: round1(Math.max(0, (p * g) / 100)),
-      fat: round1(Math.max(0, (f * g) / 100)),
-      carbs: round1(Math.max(0, (c * g) / 100)),
-    };
-  }
-
-  function render() {
-    const total = computedTotalKcal();
-    const macros = computedMacros();
-    const hasMacros = macros.protein || macros.fat || macros.carbs;
-    const remaining = freebieCat ? Math.max(0, round1(freebieCat.target_calories - freebieCat.calories_consumed)) : null;
-
-    sheetContent.innerHTML = `
-      <div class="sheet-scroll">
-        ${remaining !== null ? `<div class="remaining-hint">Залишок бюджету «Будь-чого»: <b>${fmtNum(remaining)} ккал</b></div>` : ''}
-
-        <div class="calc-result">
-          <div class="calc-result-value mono" id="freebieResultValue">${fmtNum(round1(total))}</div>
-          <div class="calc-result-label">ккал загалом</div>
-          ${hasMacros ? `<div class="calc-result-macros" id="freebieResultMacros">Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г</div>` : ''}
-        </div>
-
-        <div class="custom-input-wrap">
-          <div class="custom-input-label">Калорійність на 100г (ккал)</div>
-          <div class="custom-input-row">
-            <input type="number" inputmode="decimal" id="freebiePer100Input" placeholder="напр. 250" value="${calcState.per100 ?? ''}" />
-            <div class="unit-label">ккал</div>
-          </div>
-        </div>
-
-        <div class="custom-input-wrap">
-          <div class="custom-input-label">Вага порції (г)</div>
-          <div class="custom-input-row">
-            <input type="number" inputmode="decimal" id="freebieGramsInput" placeholder="напр. 150" value="${calcState.grams ?? ''}" />
-            <div class="unit-label">г</div>
-          </div>
-        </div>
-
-        <div class="custom-input-wrap">
-          <div class="custom-input-label">КБЖУ на 100г (необов'язково)</div>
-          <div class="calc-macro-grid">
-            <div class="calc-macro-field">
-              <input type="number" inputmode="decimal" id="freebieProteinInput" placeholder="0" value="${calcState.protein100 ?? ''}" />
-              <span class="calc-macro-label">Білки</span>
-            </div>
-            <div class="calc-macro-field">
-              <input type="number" inputmode="decimal" id="freebieFatInput" placeholder="0" value="${calcState.fat100 ?? ''}" />
-              <span class="calc-macro-label">Жири</span>
-            </div>
-            <div class="calc-macro-field">
-              <input type="number" inputmode="decimal" id="freebieCarbsInput" placeholder="0" value="${calcState.carbs100 ?? ''}" />
-              <span class="calc-macro-label">Вуглев.</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="sheet-footer">
-        <button class="confirm-btn" id="freebieSubmitBtn" ${total > 0 ? '' : 'disabled'}>Додати до «Будь-чого»</button>
-      </div>
-    `;
-
-    bind();
-  }
-
-  function bind() {
-    const per100Input = document.getElementById('freebiePer100Input');
-    per100Input?.addEventListener('input', () => {
-      const val = parseFloat(per100Input.value);
-      calcState.per100 = Number.isFinite(val) ? val : null;
-      updateResult();
-    });
-
-    const gramsInput = document.getElementById('freebieGramsInput');
-    gramsInput?.addEventListener('input', () => {
-      const val = parseFloat(gramsInput.value);
-      calcState.grams = Number.isFinite(val) ? val : null;
-      updateResult();
-    });
-
-    const proteinInput = document.getElementById('freebieProteinInput');
-    proteinInput?.addEventListener('input', () => {
-      const val = parseFloat(proteinInput.value);
-      calcState.protein100 = Number.isFinite(val) ? val : null;
-      updateResult();
-    });
-
-    const fatInput = document.getElementById('freebieFatInput');
-    fatInput?.addEventListener('input', () => {
-      const val = parseFloat(fatInput.value);
-      calcState.fat100 = Number.isFinite(val) ? val : null;
-      updateResult();
-    });
-
-    const carbsInput = document.getElementById('freebieCarbsInput');
-    carbsInput?.addEventListener('input', () => {
-      const val = parseFloat(carbsInput.value);
-      calcState.carbs100 = Number.isFinite(val) ? val : null;
-      updateResult();
-    });
-
-    const submitBtn = document.getElementById('freebieSubmitBtn');
-    submitBtn?.addEventListener('click', () => {
-      const total = round1(computedTotalKcal());
-      if (total <= 0) return;
-      haptic('impact', 'medium');
-
-      const macros = computedMacros();
-
-      // OPTIMISTIC: same pattern as every other log sheet — mutate
-      // in-memory state and re-render instantly, then persist in the
-      // background without the UI waiting on it.
-      const dayLog = dayLogCache.get(TODAY) || {};
-      dayLog[FREEBIE_CUSTOM_KCAL_KEY] = Math.max(0, (Number(dayLog[FREEBIE_CUSTOM_KCAL_KEY]) || 0) + total);
-      if (macros.protein || macros.fat || macros.carbs) {
-        const prev = readMacrosObj(dayLog, FREEBIE_CUSTOM_MACROS_KEY);
-        dayLog[FREEBIE_CUSTOM_MACROS_KEY] = {
-          protein: round1(prev.protein + macros.protein),
-          fat: round1(prev.fat + macros.fat),
-          carbs: round1(prev.carbs + macros.carbs),
-        };
-      }
-      setDayLogInMemory(TODAY, dayLog);
-      recomputeAndRender();
-
-      haptic('notification', 'success');
-      closeSheet();
-
-      persistAndSync();
-    });
-  }
-
-  function updateResult() {
-    const total = computedTotalKcal();
-    const macros = computedMacros();
-    const hasMacros = macros.protein || macros.fat || macros.carbs;
-
-    const resultEl = document.getElementById('freebieResultValue');
-    if (resultEl) resultEl.textContent = fmtNum(round1(total));
-
-    let macrosEl = document.getElementById('freebieResultMacros');
-    const macrosHtml = hasMacros ? `Б ${fmtNum(macros.protein)}г • Ж ${fmtNum(macros.fat)}г • В ${fmtNum(macros.carbs)}г` : '';
-    if (macrosEl) {
-      if (macrosHtml) macrosEl.textContent = macrosHtml;
-      else macrosEl.remove();
-    } else if (macrosHtml) {
-      const div = document.createElement('div');
-      div.className = 'calc-result-macros';
-      div.id = 'freebieResultMacros';
-      div.textContent = macrosHtml;
-      document.querySelector('.calc-result')?.appendChild(div);
-    }
-
-    const submitBtn = document.getElementById('freebieSubmitBtn');
-    if (submitBtn) submitBtn.disabled = !(total > 0);
-  }
-
-  render();
-  openSheet();
-}
-
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // AI Fridge: Gemini-generated recipe from whatever ingredients the user has
